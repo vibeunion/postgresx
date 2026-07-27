@@ -69,7 +69,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg-version: ["16", "17"]
+        pg-version: ["17", "18"]
 
     services:
       postgres:

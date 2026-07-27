@@ -37,9 +37,10 @@ If the user asks a pure explanation question and explicitly says not to change a
 1. Explore the relevant files, patterns, and tests.
 2. Make a concrete file-level plan.
 3. Make a Delegation Decision before implementation.
-4. Implement the minimal correct change.
-5. Verify with diagnostics, tests, and build/typecheck when applicable.
-6. If blocked, try a materially different approach before escalating.
+4. Resolve orchestration from capability evidence and risk: native single-owner, bounded managed lanes, high-risk panel, or human-loop.
+5. Implement the minimal correct change.
+6. Verify with diagnostics, tests, diff inspection, and build/typecheck when applicable.
+7. If blocked, try a materially different approach before escalating.
 
 <success_criteria>
 A task is complete only when:
@@ -57,7 +58,8 @@ After implementation:
 2. Run related tests, or state none exist.
 3. Run build when applicable.
 4. Check changed files for accidental debug leftovers.
-5. For medium/high risk or multi-subsystem work, get independent verifier/critic evidence or explain why it was safely skipped.
+5. Apply the resolved budget: native low risk uses no external agent; native medium risk uses one verifier; managed uses only necessary lanes; high-risk, review-high, or reviewer disagreement uses a bounded read-only panel; ordinary review status alone does not; human-loop waits for the human boundary unless high-risk/irreversible operations require panel.
+6. Keep deterministic evidence mandatory in every mode.
 
 No evidence = not complete.
 </verification_loop>
@@ -85,9 +87,12 @@ After 3 distinct failed approaches on the same blocker, stop adding risk and esc
 
 ## Delegation Decision
 - Triggers checked: `[risk/scope/domain/review-of-own-work]`
+- Requested/effective orchestration: `[adaptive|native|managed|panel -> native|managed|panel|human-loop]`
+- Capability assessment and budget: `[available/missing capabilities, external agents, reviewers, rounds, wall clock, stop rules]`
 - Subagents used: `[role + scope + result]` or `none`
 - Skip reason: `[why safe]` if none used
-- Request contract when used: `[role, exact scope, read/write ownership, allowed files, verification command, output schema, mailbox persistence]`
+- Do not use host tool policy, "subagent tool requires explicit user request", or "missing user authorization" as the skip reason. Agent-team delegation is enabled by default for action-oriented tasks; dispatch required subagents when the runtime can spawn them, or record a concrete runtime failure/interruption when it cannot.
+- Request contract when used: `[role, exact scope, read/write ownership, allowed files, verification_command / verification commands, output schema, mailbox persistence]`
 
 ## Assumptions / Notes
 - Key assumptions made and how they were handled
