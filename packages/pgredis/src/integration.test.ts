@@ -102,6 +102,12 @@ describe("PostgreSQL integration", () => {
       await expect(client.cache.persist("feature")).resolves.toBe(true);
       await expect(client.cache.ttl("feature")).resolves.toBeNull();
 
+      await client.cache.set("atomic", "old", { ttlMs: 60_000 });
+      await expect(client.cache.getset("atomic", "new")).resolves.toBe("old");
+      await expect(client.cache.ttl("atomic")).resolves.toBeNull();
+      await expect(client.cache.getdel("atomic")).resolves.toBe("new");
+      await expect(client.cache.get("atomic")).resolves.toBeNull();
+
       const batchResult = await client.batch(async (pg) => {
         await pg.cache.set("batch", { ok: true });
         return pg.cache.get<{ ok: boolean }>("batch");
@@ -188,6 +194,59 @@ describe("PostgreSQL integration", () => {
     } finally {
       listener.close();
       await sql.close();
+    }
+  });
+
+  integrationTest("invalidates the cache L1 through an injected LISTEN connection", async () => {
+    const writerSql = createPgAdapter(databaseUrl!);
+    const readerSql = createPgAdapter(databaseUrl!);
+    const namespace = uniqueName("ns");
+    const tablePrefix = uniqueName("pgredis_it");
+    const channel = uniqueName("pgredis_cache_invalidate");
+    let listener!: ReturnType<typeof createPgNodeListener>;
+    const writer = createPgredis({
+      sql: writerSql,
+      namespace,
+      tablePrefix,
+      cache: { notify: { channel } }
+    });
+    const reader = createPgredis({
+      sql: readerSql,
+      namespace,
+      tablePrefix,
+      cache: {
+        notify: {
+          channel,
+          listener: ({ channels, onNotify }) => {
+            listener = createPgNodeListener(databaseUrl!, {
+              channels,
+              onNotify,
+              healthCheckIntervalMs: 0,
+              reconnectDelayMs: 100,
+              logger: false
+            });
+            return listener;
+          }
+        }
+      }
+    });
+
+    try {
+      const connected = waitForEvent((handler) => listener.on("connected", handler));
+      await writer.ensureSchema();
+      await connected;
+      await writer.cache.set("shared", "old");
+      await expect(reader.cache.get("shared")).resolves.toBe("old");
+
+      const notification = waitForEvent((handler) => listener.on("notification", handler));
+      await writer.cache.set("shared", "new");
+      await notification;
+      await expect(reader.cache.get("shared")).resolves.toBe("new");
+    } finally {
+      reader.cache.stopInvalidationListener();
+      await dropTables(writerSql, tablePrefix).catch(() => undefined);
+      await writerSql.close();
+      await readerSql.close();
     }
   });
 });

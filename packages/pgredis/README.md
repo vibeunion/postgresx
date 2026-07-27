@@ -249,6 +249,36 @@ If package-name aliasing is useful during migration, use the thin re-export
 packages `@postgresx/noredis-ioredis` and `@postgresx/noredis-redis`. They are
 still facades over `PgredisClient`; they do not provide drop-in constructors.
 
+### L1 invalidation and atomic swaps
+
+Configure a listener factory to keep the local L1 cache coherent across
+processes. The listener must use a dedicated connection that supports
+`LISTEN`; do not reuse a transaction-pooled request connection.
+
+```ts
+import { createPgredis } from "@postgresx/noredis";
+import { createPgNodeListener } from "@postgresx/noredis/adapters/node";
+
+const pg = createPgredis({
+  sql,
+  cache: {
+    notify: {
+      listener: ({ channels, onNotify }) =>
+        createPgNodeListener(directDatabaseUrl, { channels, onNotify })
+    }
+  }
+});
+
+pg.cache.stopInvalidationListener();
+```
+
+Remote notifications invalidate matching L1 entries. A listener reconnect
+clears the complete L1 cache by default so notifications missed during the
+disconnect cannot leave stale entries behind. `getset()` runs in a retried
+serializable transaction and therefore requires an adapter with `begin()`;
+the built-in Bun and Node adapters provide it. `getdel()` uses one atomic
+`DELETE ... RETURNING` statement.
+
 ## Pub/Sub
 
 Publishing uses only the configured SQL adapter. Bun LISTEN/NOTIFY consumption
@@ -719,6 +749,33 @@ await redisJsLike.hSet("profile:1", "name", "Ada");
 如果迁移时需要包名 alias，可以使用薄 re-export 包
 `@postgresx/noredis-ioredis` 和 `@postgresx/noredis-redis`。它们仍然是
 `PgredisClient` 之上的外观，不提供即插即用构造器。
+
+### L1 失效与原子交换
+
+通过 listener factory 让多个进程的本地 L1 缓存保持一致。监听器必须使用
+支持 `LISTEN` 的独立连接，不要复用 transaction pooler 的请求连接。
+
+```ts
+import { createPgredis } from "@postgresx/noredis";
+import { createPgNodeListener } from "@postgresx/noredis/adapters/node";
+
+const pg = createPgredis({
+  sql,
+  cache: {
+    notify: {
+      listener: ({ channels, onNotify }) =>
+        createPgNodeListener(directDatabaseUrl, { channels, onNotify })
+    }
+  }
+});
+
+pg.cache.stopInvalidationListener();
+```
+
+远端通知会使匹配的 L1 条目失效。监听连接重连时默认清空完整 L1，避免断线期间
+漏掉的通知留下陈旧缓存。`getset()` 在可重试的串行化事务中执行，因此 SQL
+适配器必须提供 `begin()`；内置 Bun 和 Node 适配器均支持。`getdel()` 使用单条
+原子 `DELETE ... RETURNING` 语句。
 
 ## Pub/Sub
 
