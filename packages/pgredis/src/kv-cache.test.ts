@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { PgKvCache, type BunSqlLike, type PgKvNotification } from "./kv-cache";
+import {
+  PgKvCache,
+  type BunSqlLike,
+  type PgKvCacheListenerFactoryOptions,
+  type PgKvNotification
+} from "./kv-cache";
+import type { PgListenerEvents, PgListenerHandle, PgListenerHealth } from "./pubsub";
 
 interface StoredValue {
   value: unknown;
@@ -8,15 +14,28 @@ interface StoredValue {
 
 class MockSql implements BunSqlLike {
   now = 1_000;
+  beginCalls = 0;
   readonly rows = new Map<string, StoredValue>();
-  readonly queries: Array<{ query: string; params: readonly unknown[] }> = [];
+  readonly queries: Array<{ query: string; params: readonly unknown[]; inTransaction: boolean }> = [];
   readonly notifications: PgKvNotification[] = [];
+  private transactionDepth = 0;
+
+  async begin<T>(callback: (tx: BunSqlLike) => Promise<T>): Promise<T> {
+    this.beginCalls += 1;
+    this.transactionDepth += 1;
+    try {
+      return await callback(this);
+    } finally {
+      this.transactionDepth -= 1;
+    }
+  }
 
   async unsafe<T = Record<string, unknown>>(query: string, params: readonly unknown[] = []): Promise<T[]> {
-    this.queries.push({ query, params });
+    this.queries.push({ query, params, inTransaction: this.transactionDepth > 0 });
     const normalized = query.replace(/\s+/g, " ").trim().toUpperCase();
 
     if (normalized.startsWith("CREATE")) return [] as T[];
+    if (normalized.startsWith("SET TRANSACTION")) return [] as T[];
 
     if (normalized.startsWith("SELECT PG_NOTIFY")) {
       this.notifications.push(JSON.parse(String(params[1])) as PgKvNotification);
@@ -31,11 +50,12 @@ class MockSql implements BunSqlLike {
         const existing = this.getLiveRow(namespace, key);
         if (existing) return [] as T[];
       }
-      for (let index = 0; index < params.length; index += 4) {
+      const stride = normalized.includes("$3::JSONB, NULL, NOW()") ? 3 : 4;
+      for (let index = 0; index < params.length; index += stride) {
         const namespace = String(params[index]);
         const key = String(params[index + 1]);
         const value = JSON.parse(String(params[index + 2])) as unknown;
-        const ttlMs = params[index + 3] === null ? null : Number(params[index + 3]);
+        const ttlMs = stride === 3 || params[index + 3] === null ? null : Number(params[index + 3]);
         this.rows.set(this.rowKey(namespace, key), {
           value,
           expiresAt: ttlMs === null ? null : this.now + ttlMs
@@ -122,6 +142,18 @@ class MockSql implements BunSqlLike {
       this.rows.delete(this.rowKey(namespace, key));
       this.rows.set(this.rowKey(namespace, newKey), row);
       return [{ key: newKey }] as T[];
+    }
+
+    if (normalized.startsWith("WITH DELETED AS")) {
+      const namespace = String(params[0]);
+      const key = String(params[1]);
+      const row = this.rows.get(this.rowKey(namespace, key));
+      if (!row) return [] as T[];
+      this.rows.delete(this.rowKey(namespace, key));
+      return [{
+        value: row.value,
+        is_live: row.expiresAt === null || row.expiresAt > this.now
+      }] as T[];
     }
 
     if (normalized.startsWith("DELETE FROM") && normalized.includes("EXPIRES_AT IS NOT NULL")) {
@@ -217,6 +249,95 @@ class MockSql implements BunSqlLike {
 
   private escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+}
+
+class DelayedReadSql extends MockSql {
+  readonly readStarted: Promise<void>;
+  private readonly readGate: Promise<void>;
+  private markReadStarted!: () => void;
+  private releaseReadGate!: () => void;
+  private delayNextRead = true;
+
+  constructor() {
+    super();
+    this.readStarted = new Promise((resolve) => {
+      this.markReadStarted = resolve;
+    });
+    this.readGate = new Promise((resolve) => {
+      this.releaseReadGate = resolve;
+    });
+  }
+
+  releaseRead(): void {
+    this.releaseReadGate();
+  }
+
+  override async unsafe<T = Record<string, unknown>>(
+    query: string,
+    params: readonly unknown[] = []
+  ): Promise<T[]> {
+    const normalized = query.replace(/\s+/g, " ").trim().toUpperCase();
+    if (this.delayNextRead && normalized.startsWith("SELECT VALUE")) {
+      this.delayNextRead = false;
+      this.markReadStarted();
+      await this.readGate;
+    }
+    return super.unsafe<T>(query, params);
+  }
+}
+
+class FakeListener implements PgListenerHandle {
+  closeCalls = 0;
+  private readonly listeners = new Map<
+    keyof PgListenerEvents,
+    Set<(payload: PgListenerEvents[keyof PgListenerEvents]) => void>
+  >();
+
+  close(): void {
+    this.closeCalls += 1;
+  }
+
+  async notify(): Promise<void> {}
+
+  getHealth(): PgListenerHealth {
+    return {
+      status: this.closeCalls > 0 ? "closed" : "connected",
+      connected: this.closeCalls === 0,
+      listeningChannels: [],
+      queuedQueries: 0,
+      activeQuery: false,
+      reconnectAttempts: 0,
+      lastConnectedAt: null,
+      lastMessageAt: null,
+      lastNotificationAt: null,
+      lastError: null
+    };
+  }
+
+  on<K extends keyof PgListenerEvents>(
+    event: K,
+    handler: (payload: PgListenerEvents[K]) => void
+  ): () => void {
+    const bucket = this.listeners.get(event) ?? new Set();
+    bucket.add(handler as (payload: PgListenerEvents[keyof PgListenerEvents]) => void);
+    this.listeners.set(event, bucket);
+    return () => this.off(event, handler);
+  }
+
+  off<K extends keyof PgListenerEvents>(
+    event: K,
+    handler: (payload: PgListenerEvents[K]) => void
+  ): void {
+    this.listeners.get(event)?.delete(
+      handler as (payload: PgListenerEvents[keyof PgListenerEvents]) => void
+    );
+  }
+
+  emit<K extends keyof PgListenerEvents>(event: K, payload: PgListenerEvents[K]): void {
+    for (const handler of this.listeners.get(event) ?? []) {
+      handler(payload);
+    }
   }
 }
 
@@ -344,6 +465,81 @@ describe("PgKvCache", () => {
     })).toBe(false);
     expect(cache.stats().l1Size).toBe(1);
   });
+
+  test("automatically wires L1 invalidation and owns the listener lifecycle", async () => {
+    const sql = new MockSql();
+    const listeners: FakeListener[] = [];
+    const factoryCalls: PgKvCacheListenerFactoryOptions[] = [];
+    const factory = (options: PgKvCacheListenerFactoryOptions): PgListenerHandle => {
+      factoryCalls.push(options);
+      const listener = new FakeListener();
+      listeners.push(listener);
+      return listener;
+    };
+    const cache = new PgKvCache({
+      sql,
+      namespace: "auth",
+      instanceId: "local",
+      notify: { channel: "auth_cache_invalidate", listener: factory }
+    });
+
+    expect(factoryCalls[0]?.channels).toEqual(["auth_cache_invalidate"]);
+    await cache.set("token", { userId: 1 });
+    factoryCalls[0]!.onNotify("other_channel", JSON.stringify({
+      namespace: "auth",
+      key: "token",
+      op: "delete",
+      senderId: "remote"
+    }));
+    expect(cache.stats().l1Size).toBe(1);
+
+    factoryCalls[0]!.onNotify("auth_cache_invalidate", JSON.stringify({
+      namespace: "auth",
+      key: "token",
+      op: "delete",
+      senderId: "remote"
+    }));
+    expect(cache.stats().l1Size).toBe(0);
+
+    await cache.set("token", { userId: 1 });
+    factoryCalls[0]!.onNotify("auth_cache_invalidate", JSON.stringify({
+      namespace: "auth",
+      key: "token",
+      op: "delete",
+      senderId: "local"
+    }));
+    expect(cache.stats().l1Size).toBe(1);
+
+    listeners[0]!.emit("reconnect", { attempt: 1, delayMs: 10 });
+    expect(cache.stats().l1Size).toBe(0);
+
+    const replacement = cache.startInvalidationListener(factory);
+    expect(replacement).toBe(listeners[1]);
+    expect(listeners[0]!.closeCalls).toBe(1);
+
+    await cache.set("token", { userId: 1 });
+    cache.stopInvalidationListener();
+    expect(listeners[1]!.closeCalls).toBe(1);
+    listeners[1]!.emit("reconnect", { attempt: 2, delayMs: 20 });
+    expect(cache.stats().l1Size).toBe(1);
+  });
+
+  test("does not repopulate L1 from a read started before reconnect", async () => {
+    const sql = new DelayedReadSql();
+    const listener = new FakeListener();
+    const cache = new PgKvCache({ sql, namespace: "auth" });
+    cache.startInvalidationListener(() => listener);
+    await cache.set("token", { userId: 1 });
+    cache.invalidate("token");
+
+    const pendingRead = cache.get("token");
+    await sql.readStarted;
+    listener.emit("reconnect", { attempt: 1, delayMs: 10 });
+    sql.releaseRead();
+
+    await expect(pendingRead).resolves.toEqual({ userId: 1 });
+    expect(cache.stats().l1Size).toBe(0);
+  });
 });
 
   test("NX: set only when key is missing", async () => {
@@ -439,17 +635,94 @@ describe("PgKvCache", () => {
     expect(count).toBe(2);
   });
 
-  test("setex/psetex/setnx/getset/getdel work", async () => {
+  test("setex/psetex/setnx shortcuts work", async () => {
     const sql = new MockSql();
     const cache = new PgKvCache({ sql, namespace: "shortcuts" });
 
     expect(await cache.setex("k1", 60, "v1")).toBe("OK");
     expect(await cache.psetex("k2", 60000, "v2")).toBe("OK");
     expect(await cache.setnx("k3", "v3")).toBe(1);
-    const old = await cache.getset("k1", "new");
-    expect(old).toBe("v1");
-    const deleted = await cache.getdel("k1");
-    expect(deleted).toBe("new");
+  });
+
+  test("getset runs in a serializable transaction and removes the TTL", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "getset", now: () => sql.now });
+    await cache.set("key", "old", { ttlMs: 5_000 });
+    sql.queries.length = 0;
+    sql.notifications.length = 0;
+
+    await expect(cache.getset("key", "new")).resolves.toBe("old");
+
+    expect(sql.beginCalls).toBe(1);
+    const transactionQueries = sql.queries.filter((entry) => entry.inTransaction);
+    expect(transactionQueries).toHaveLength(3);
+    expect(transactionQueries[0]!.query).toContain("SERIALIZABLE");
+    expect(transactionQueries[1]!.query).toContain("FOR UPDATE");
+    expect(transactionQueries[2]!.query).toContain("expires_at = NULL");
+    expect(sql.notifications).toHaveLength(1);
+    expect(sql.notifications[0]).toMatchObject({ op: "set", key: "key" });
+
+    sql.now += 70_000;
+    await expect(cache.get("key")).resolves.toBe("new");
+  });
+
+  test("getset treats an expired row as missing and atomically replaces it", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "getset-expired", now: () => sql.now });
+    await cache.set("key", "expired", { ttlMs: 5 });
+    sql.now += 10;
+    sql.queries.length = 0;
+    sql.notifications.length = 0;
+
+    await expect(cache.getset("key", "new")).resolves.toBeNull();
+    await expect(cache.get("key")).resolves.toBe("new");
+    expect(sql.beginCalls).toBe(1);
+    expect(sql.notifications).toHaveLength(1);
+  });
+
+  test("getset fails closed without transaction support", async () => {
+    const backing = new MockSql();
+    const sql: BunSqlLike = {
+      unsafe<T = Record<string, unknown>>(query: string, params?: readonly unknown[]): Promise<T[]> {
+        return backing.unsafe<T>(query, params);
+      }
+    };
+    const cache = new PgKvCache({ sql, namespace: "getset-no-transaction" });
+
+    await expect(cache.getset("key", "new")).rejects.toThrow("transaction-capable");
+  });
+
+  test("getdel atomically returns and deletes live values", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "getdel" });
+    await cache.set("key", "old");
+    sql.queries.length = 0;
+    sql.notifications.length = 0;
+
+    await expect(cache.getdel("key")).resolves.toBe("old");
+
+    const dataQueries = sql.queries.filter((entry) => !entry.query.includes("pg_notify"));
+    expect(dataQueries).toHaveLength(1);
+    expect(dataQueries[0]!.query).toContain("WITH deleted AS");
+    expect(sql.notifications).toHaveLength(1);
+    expect(sql.notifications[0]).toMatchObject({ op: "delete", key: "key" });
+  });
+
+  test("getdel removes expired rows, returns null, and skips missing notifications", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "getdel-expired", now: () => sql.now });
+    await cache.set("expired", "old", { ttlMs: 5 });
+    sql.now += 10;
+    sql.queries.length = 0;
+    sql.notifications.length = 0;
+
+    await expect(cache.getdel("expired")).resolves.toBeNull();
+    expect(sql.rows.has("getdel-expired\0expired")).toBe(false);
+    expect(sql.notifications).toHaveLength(1);
+
+    sql.notifications.length = 0;
+    await expect(cache.getdel("missing")).resolves.toBeNull();
+    expect(sql.notifications).toHaveLength(0);
   });
 
   test("delete returns boolean", async () => {

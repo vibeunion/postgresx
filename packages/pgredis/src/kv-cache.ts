@@ -1,5 +1,8 @@
+import type { NotifyHandler, PgListenerHandle } from "./pubsub";
+
 export interface BunSqlLike {
   unsafe<T = Record<string, unknown>>(query: string, params?: readonly unknown[]): Promise<T[]>;
+  begin?<T>(callback: (tx: BunSqlLike) => Promise<T>): Promise<T>;
 }
 
 export interface PgKvCacheL1Options {
@@ -10,6 +13,19 @@ export interface PgKvCacheL1Options {
 export interface PgKvCacheNotifyOptions {
   channel?: string;
   enabled?: boolean;
+  listener?: PgKvCacheListenerFactory;
+  clearL1OnReconnect?: boolean;
+}
+
+export interface PgKvCacheListenerFactoryOptions {
+  channels: string[];
+  onNotify: NotifyHandler;
+}
+
+export type PgKvCacheListenerFactory = (options: PgKvCacheListenerFactoryOptions) => PgListenerHandle;
+
+export interface PgKvCacheInvalidationOptions {
+  clearL1OnReconnect?: boolean;
 }
 
 export interface PgKvCacheOptions {
@@ -132,6 +148,12 @@ function normalizeTtlMs(ttlMs: number | null | undefined): number | null {
   return Math.max(0, Math.floor(ttlMs));
 }
 
+function isSerializationFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  if ("code" in error && error.code === "40001") return true;
+  return "cause" in error && isSerializationFailure(error.cause);
+}
+
 function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }
@@ -161,6 +183,9 @@ export class PgKvCache {
   private readonly notifyEnabled: boolean;
   private readonly serializer: PgKvSerializer;
   private readonly l1 = new Map<string, L1Entry>();
+  private l1Generation = 0;
+  private invalidationListener: PgListenerHandle | null = null;
+  private invalidationReconnectUnsubscribe: (() => void) | null = null;
 
   constructor(options: PgKvCacheOptions) {
     this.sql = options.sql;
@@ -180,6 +205,13 @@ export class PgKvCache {
       serialize: (value) => value,
       deserialize: (value) => value
     };
+
+    const listenerFactory = this.resolveNotifyOptions(options.notify)?.listener;
+    if (listenerFactory) {
+      this.startInvalidationListener(listenerFactory, {
+        clearL1OnReconnect: this.resolveNotifyOptions(options.notify)?.clearL1OnReconnect
+      });
+    }
   }
 
   async ensureSchema(options: PgKvSchemaOptions = {}): Promise<void> {
@@ -208,6 +240,7 @@ export class PgKvCache {
   async get<T = unknown>(key: string): Promise<T | null> {
     const cached = this.getL1<T>(key);
     if (cached.hit) return cached.value;
+    const l1Generation = this.l1Generation;
 
     const rows = await this.sql.unsafe<CacheRow>(
       `SELECT value, expires_at
@@ -225,7 +258,7 @@ export class PgKvCache {
     }
 
     const value = this.deserialize<T>(row.value);
-    this.setL1(key, value, rowExpiresAt(row));
+    this.setL1(key, value, rowExpiresAt(row), l1Generation);
     return value;
   }
 
@@ -243,6 +276,7 @@ export class PgKvCache {
     }
 
     if (missing.length === 0) return result;
+    const l1Generation = this.l1Generation;
 
     const placeholders = missing.map((_, index) => `$${index + 2}`).join(", ");
     const rows = await this.sql.unsafe<CacheRow>(
@@ -258,7 +292,7 @@ export class PgKvCache {
       if (!row.key) continue;
       const value = this.deserialize<T>(row.value);
       result.set(row.key, value);
-      this.setL1(row.key, value, rowExpiresAt(row));
+      this.setL1(row.key, value, rowExpiresAt(row), l1Generation);
     }
 
     for (const key of missing) {
@@ -373,7 +407,7 @@ export class PgKvCache {
        RETURNING key`,
       [this.namespace]
     );
-    this.l1.clear();
+    this.invalidateAll();
     if (options.notify !== false) await this.publish({ op: "clearNamespace" });
     return rows.length;
   }
@@ -526,6 +560,41 @@ export class PgKvCache {
     this.deleteL1(key);
   }
 
+  invalidateAll(): void {
+    this.l1Generation += 1;
+    this.l1.clear();
+  }
+
+  startInvalidationListener(
+    factory: PgKvCacheListenerFactory,
+    options: PgKvCacheInvalidationOptions = {}
+  ): PgListenerHandle {
+    this.stopInvalidationListener();
+
+    const listener = factory({
+      channels: [this.notifyChannel],
+      onNotify: (channel, payload) => {
+        if (channel === this.notifyChannel) this.handleNotification(payload);
+      }
+    });
+    const reconnectUnsubscribe = options.clearL1OnReconnect === false
+      ? null
+      : listener.on("reconnect", () => this.invalidateAll());
+
+    this.invalidationListener = listener;
+    this.invalidationReconnectUnsubscribe = reconnectUnsubscribe;
+    return listener;
+  }
+
+  stopInvalidationListener(): void {
+    const listener = this.invalidationListener;
+    const reconnectUnsubscribe = this.invalidationReconnectUnsubscribe;
+    this.invalidationListener = null;
+    this.invalidationReconnectUnsubscribe = null;
+    reconnectUnsubscribe?.();
+    listener?.close();
+  }
+
   handleNotification(payload: string | PgKvNotification): boolean {
     const event = typeof payload === "string" ? this.parseNotification(payload) : payload;
     if (!event || event.namespace !== this.namespace || event.senderId === this.instanceId) return false;
@@ -536,13 +605,14 @@ export class PgKvCache {
     }
     if (event.op === "clearPrefix") {
       if (!event.prefix) return false;
+      this.l1Generation += 1;
       for (const key of this.l1.keys()) {
         if (key.startsWith(event.prefix)) this.l1.delete(key);
       }
       return true;
     }
     if (event.op === "clearNamespace") {
-      this.l1.clear();
+      this.invalidateAll();
       return true;
     }
     return false;
@@ -643,15 +713,54 @@ export class PgKvCache {
   }
 
   async getset<T = unknown>(key: string, value: T): Promise<T | null> {
-    const old = await this.get<T>(key);
-    await this.set(key, value);
-    return old;
+    const serialized = jsonValue(this.serializer.serialize(value));
+    const l1Generation = this.l1Generation;
+    const oldValue = await this.runSerializable(async (tx) => {
+      const rows = await tx.unsafe<CacheRow>(
+        `SELECT value, expires_at
+         FROM ${this.quotedTableName}
+         WHERE namespace = $1
+           AND key = $2
+           AND (expires_at IS NULL OR expires_at > NOW())
+         FOR UPDATE`,
+        [this.namespace, key]
+      );
+
+      await tx.unsafe(
+        `INSERT INTO ${this.quotedTableName} (namespace, key, value, expires_at, updated_at)
+         VALUES ($1, $2, $3::jsonb, NULL, NOW())
+         ON CONFLICT (namespace, key) DO UPDATE
+         SET value = EXCLUDED.value,
+             expires_at = NULL,
+             updated_at = NOW()`,
+        [this.namespace, key, serialized]
+      );
+
+      return rows[0] ? this.deserialize<T>(rows[0].value) : null;
+    });
+
+    this.setL1(key, value, null, l1Generation);
+    await this.publish({ op: "set", key });
+    return oldValue;
   }
 
   async getdel<T = unknown>(key: string): Promise<T | null> {
-    const value = await this.get<T>(key);
-    if (value !== null) await this.delete(key);
-    return value;
+    const rows = await this.sql.unsafe<{ value: unknown; is_live: boolean }>(
+      `WITH deleted AS (
+         DELETE FROM ${this.quotedTableName}
+         WHERE namespace = $1 AND key = $2
+         RETURNING value, expires_at
+       )
+       SELECT value,
+              (expires_at IS NULL OR expires_at > NOW()) AS is_live
+       FROM deleted`,
+      [this.namespace, key]
+    );
+    const row = rows[0];
+    this.deleteL1(key);
+    if (!row) return null;
+    await this.publish({ op: "delete", key });
+    return row.is_live ? this.deserialize<T>(row.value) : null;
   }
 
   stats(): PgKvCacheStats {
@@ -674,6 +783,26 @@ export class PgKvCache {
     await this.sql.unsafe("SELECT pg_notify($1, $2)", [this.notifyChannel, JSON.stringify(payload)]);
   }
 
+  private async runSerializable<T>(operation: (tx: BunSqlLike) => Promise<T>): Promise<T> {
+    const begin = this.sql.begin?.bind(this.sql);
+    if (!begin) {
+      throw new Error("PgKvCache.getset requires a transaction-capable sql adapter");
+    }
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await begin(async (tx) => {
+          await tx.unsafe("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");
+          return operation(tx);
+        });
+      } catch (error) {
+        if (!isSerializationFailure(error) || attempt === 2) throw error;
+      }
+    }
+
+    throw new Error("PgKvCache serializable transaction retry exhausted");
+  }
+
   private deserialize<T>(value: unknown): T {
     return this.serializer.deserialize(parseValue(value)) as T;
   }
@@ -683,6 +812,12 @@ export class PgKvCache {
     if (options.nx) return "nx";
     if (options.xx) return "xx";
     return options.mode ?? "always";
+  }
+
+  private resolveNotifyOptions(
+    options: false | PgKvCacheNotifyOptions | undefined
+  ): PgKvCacheNotifyOptions | undefined {
+    return options === false ? undefined : options;
   }
 
   private parseNotification(payload: string): PgKvNotification | null {
@@ -708,8 +843,9 @@ export class PgKvCache {
     return { hit: true, value: entry.value as T };
   }
 
-  private setL1<T>(key: string, value: T, l2ExpiresAt: number | null): void {
+  private setL1<T>(key: string, value: T, l2ExpiresAt: number | null, generation = this.l1Generation): void {
     if (!this.l1Enabled || this.l1Max <= 0) return;
+    if (generation !== this.l1Generation) return;
     const l1ExpiresAt = this.computeL1ExpiresAt(l2ExpiresAt);
     if (l1ExpiresAt !== null && l1ExpiresAt <= this.now()) {
       this.l1.delete(key);
@@ -729,6 +865,7 @@ export class PgKvCache {
 
   private deleteL1(key: string): void {
     if (!this.l1Enabled) return;
+    this.l1Generation += 1;
     this.l1.delete(key);
   }
 
