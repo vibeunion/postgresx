@@ -7,26 +7,26 @@ description: 自动化烟雾测试 — 在沙盒里运行 no-op 任务闭环
 
 ## 0. Scope
 
-- 只验证 agent-team 自动化框架本身
+- 只验证 agmesh 自动化框架本身
 - 只运行本地沙盒 no-op 流程
 - 不访问生产项目，不创建真实 PR/MR，不修改业务仓库
 
 ## 1. Command
 
 ```bash
-agent-team automation smoke
+agmesh automation smoke
 ```
 
 发布前运行完整门禁：
 
 ```bash
-agent-team automation release-check
+agmesh automation release-check
 ```
 
 可选保留沙盒用于排查：
 
 ```bash
-agent-team automation smoke ./tmp-agent-team-smoke --keep
+agmesh automation smoke ./tmp-agent-team-smoke --keep
 ```
 
 ## 2. Checks
