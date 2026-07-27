@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.1](https://github.com/zuohuadong/postgresx/compare/@postgresx/noredis-v0.6.0...@postgresx/noredis-v0.6.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* make kv invalidation and swaps atomic ([ed1deb2](https://github.com/zuohuadong/postgresx/commit/ed1deb28ce30fe122dbd5ee804fdbbd5dcb0b2dd))
+* **pgredis:** make L1 invalidation and KV swaps atomic ([066d8c7](https://github.com/zuohuadong/postgresx/commit/066d8c730c55ab282a83de036dc1922fafc7bb18))
+
+
+### Miscellaneous
+
+* sync agent-team framework and bump CI to PostgreSQL 17/18 ([7153904](https://github.com/zuohuadong/postgresx/commit/71539042cb3d7b2fd3783825ab33c49a073d4871))
+
 ## [0.6.0](https://github.com/zuohuadong/postgresx/compare/@postgresx/noredis-v0.5.2...@postgresx/noredis-v0.6.0) (2026-06-27)
 
 
