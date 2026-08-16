@@ -529,7 +529,7 @@ outbox/stream, list blocking-pop helpers, production metrics, Redis-style
 aliases, web adapters, and expanded KV write semantics.
 
 Follow-up documentation and benchmark candidates are tracked in
-the [repository migration examples](https://github.com/zuohuadong/postgresx/blob/main/docs/redis-migration-examples.md):
+the [repository migration examples](https://github.com/vibeunion/postgresx/blob/main/docs/redis-migration-examples.md):
 
 1. Redis Streams consumer-group migration patterns for `XREADGROUP`, pending entries, and retries.
 2. Framework-specific session middleware examples built on the web adapter.
@@ -1025,7 +1025,7 @@ Redis 在核心数据类型、服务器操作、可编程性、集群、模块�
 10. ~~子模块入口~~ — `kv`、`hash`、`set`、`sorted-set`、`list`、`pubsub` 子路径导出类型化原语。
 
 后续迁移文档和 benchmark 候选项记录在
-[仓库迁移示例](https://github.com/zuohuadong/postgresx/blob/main/docs/redis-migration-examples.md) 中：
+[仓库迁移示例](https://github.com/vibeunion/postgresx/blob/main/docs/redis-migration-examples.md) 中：
 Redis Streams consumer-group 迁移、session middleware 示例、SQL adapter
 retry/backoff 边界、outbox/list/pipeline benchmark，以及明确非目标。
 

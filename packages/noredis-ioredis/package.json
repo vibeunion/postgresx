@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zuohuadong/postgresx",
+    "url": "https://github.com/vibeunion/postgresx",
     "directory": "packages/noredis-ioredis"
   },
   "sideEffects": false,
