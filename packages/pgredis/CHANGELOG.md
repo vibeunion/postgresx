@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.6.1...@postgresx/noredis-v0.7.0) (2026-08-16)
+
+
+### Features
+
+* **pgredis:** support WAL-backed schema setup ([#15](https://github.com/vibeunion/postgresx/issues/15)) ([855d42f](https://github.com/vibeunion/postgresx/commit/855d42f58663c3da1557656bde1186f1725c293b))
+
+
+### Miscellaneous
+
+* update repository URLs to vibeunion/postgresx ([17b5434](https://github.com/vibeunion/postgresx/commit/17b54349c385688db430e823962b8853108e50fd))
+
 ## [0.6.1](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.6.0...@postgresx/noredis-v0.6.1) (2026-07-27)
 
 

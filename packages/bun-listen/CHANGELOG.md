@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/vibeunion/postgresx/compare/@postgresx/bun-listen-v0.3.1...@postgresx/bun-listen-v0.3.2) (2026-08-16)
+
+
+### Miscellaneous
+
+* update repository URLs to vibeunion/postgresx ([17b5434](https://github.com/vibeunion/postgresx/commit/17b54349c385688db430e823962b8853108e50fd))
+
 ## [0.3.1](https://github.com/vibeunion/postgresx/compare/@postgresx/bun-listen-v0.3.0...@postgresx/bun-listen-v0.3.1) (2026-06-27)
 
 

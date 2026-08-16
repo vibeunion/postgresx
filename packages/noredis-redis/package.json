@@ -1,6 +1,6 @@
 {
   "name": "@postgresx/noredis-redis",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Thin node-redis-shaped facade package for @postgresx/noredis migrations",
   "type": "module",
   "license": "MIT",
