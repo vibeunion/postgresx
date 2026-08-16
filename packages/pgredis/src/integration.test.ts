@@ -12,11 +12,68 @@ function uniqueName(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function pgredisTableNames(tablePrefix: string): string[] {
+  return ["kv", "counter", "hash", "set", "list", "sorted_set", "rate_limit", "outbox"]
+    .map((name) => `${tablePrefix}_${name}`);
+}
+
 async function dropTables(sql: ReturnType<typeof createPgAdapter>, tablePrefix: string): Promise<void> {
-  const names = ["kv", "counter", "hash", "set", "list", "sorted_set", "rate_limit", "outbox"].map((name) => `${tablePrefix}_${name}`);
-  for (const name of names) {
+  for (const name of pgredisTableNames(tablePrefix)) {
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(name)} CASCADE`);
   }
+}
+
+function createIntegrationClient(
+  sql: ReturnType<typeof createPgAdapter>,
+  namespace: string,
+  tablePrefix: string
+) {
+  return createPgredis({
+    sql,
+    namespace,
+    tablePrefix,
+    cache: { l1: false, notify: false },
+    rateLimit: { limit: 10, windowMs: 1000 }
+  });
+}
+
+type IntegrationClient = ReturnType<typeof createIntegrationClient>;
+
+async function expectWalBackedTables(
+  sql: ReturnType<typeof createPgAdapter>,
+  tablePrefix: string
+): Promise<void> {
+  const relations = await sql.unsafe<{ relname: string; relpersistence: string }>(
+    `SELECT relname, relpersistence
+     FROM pg_class
+     WHERE relname = ANY($1::text[])
+     ORDER BY relname`,
+    [pgredisTableNames(tablePrefix)]
+  );
+  expect(relations).toHaveLength(8);
+  expect(relations.every(({ relpersistence }) => relpersistence === "p")).toBe(true);
+}
+
+async function expectAtomicGetdel(writer: IntegrationClient, contender: IntegrationClient): Promise<void> {
+  await writer.cache.set("take-once", { id: 1 }, { notify: false });
+  const claims = await Promise.all(Array.from({ length: 16 }, (_, index) => (
+    (index % 2 === 0 ? writer : contender).cache.getdel<{ id: number }>("take-once")
+  )));
+  expect(claims.filter((claim) => claim !== null)).toEqual([{ id: 1 }]);
+}
+
+async function expectReconnectPersistence(
+  writer: IntegrationClient,
+  writerSql: ReturnType<typeof createPgAdapter>,
+  namespace: string,
+  tablePrefix: string
+): Promise<ReturnType<typeof createPgAdapter>> {
+  await writer.cache.set("reconnect", "persisted", { notify: false });
+  await writerSql.close();
+  const reopenedSql = createPgAdapter(databaseUrl!);
+  const reopened = createIntegrationClient(reopenedSql, namespace, tablePrefix);
+  await expect(reopened.cache.get("reconnect")).resolves.toBe("persisted");
+  return reopenedSql;
 }
 
 function waitForEvent<T>(register: (handler: (payload: T) => void) => () => void, timeoutMs = 5000): Promise<T> {
@@ -145,6 +202,31 @@ describe("PostgreSQL integration", () => {
     } finally {
       await dropTables(sql, tablePrefix).catch(() => undefined);
       await sql.close();
+    }
+  });
+
+  integrationTest("supports WAL-backed persistence and atomic take-once operations", async () => {
+    const writerSql = createPgAdapter(databaseUrl!);
+    const contenderSql = createPgAdapter(databaseUrl!);
+    const namespace = uniqueName("ns");
+    const tablePrefix = uniqueName("pgredis_it");
+    const writer = createIntegrationClient(writerSql, namespace, tablePrefix);
+    const contender = createIntegrationClient(contenderSql, namespace, tablePrefix);
+    let reopenedSql: ReturnType<typeof createPgAdapter> | null = null;
+
+    try {
+      await writer.ensureSchema({ unlogged: false });
+      await expectWalBackedTables(writerSql, tablePrefix);
+      await expectAtomicGetdel(writer, contender);
+      reopenedSql = await expectReconnectPersistence(writer, writerSql, namespace, tablePrefix);
+    } finally {
+      const cleanupSql = reopenedSql ?? contenderSql;
+      await dropTables(cleanupSql, tablePrefix).catch(() => undefined);
+      await Promise.allSettled([
+        writerSql.close(),
+        contenderSql.close(),
+        reopenedSql?.close() ?? Promise.resolve()
+      ]);
     }
   });
 

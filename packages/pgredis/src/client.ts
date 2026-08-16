@@ -32,6 +32,11 @@ export interface PgredisOptions {
   };
 }
 
+export interface PgredisSchemaOptions {
+  /** Controls cache-style primitives; the durable outbox always remains logged. */
+  unlogged?: boolean;
+}
+
 export interface PgredisClient {
   cache: PgKvCache;
   counter: PgCounter;
@@ -57,7 +62,7 @@ export interface PgredisClient {
   metrics(): Promise<PgredisMetrics>;
   cleanupExpired(limit?: number): Promise<Record<string, number>>;
   startCleanupWorker(options?: { intervalMs?: number; limit?: number; onError?: (error: unknown) => void }): () => void;
-  ensureSchema(): Promise<void>;
+  ensureSchema(options?: PgredisSchemaOptions): Promise<void>;
 }
 
 function tableName(prefix: string, name: string): string {
@@ -209,15 +214,15 @@ export function createPgredis(options: PgredisOptions): PgredisClient {
       }, intervalMs);
       return () => clearInterval(timer);
     },
-    async ensureSchema() {
-      await cache.ensureSchema();
-      await counter.ensureSchema();
-      await hash.ensureSchema();
-      await set.ensureSchema();
-      await list.ensureSchema();
-      await sortedSet.ensureSchema();
+    async ensureSchema(schemaOptions = {}) {
+      await cache.ensureSchema(schemaOptions);
+      await counter.ensureSchema(schemaOptions);
+      await hash.ensureSchema(schemaOptions);
+      await set.ensureSchema(schemaOptions);
+      await list.ensureSchema(schemaOptions);
+      await sortedSet.ensureSchema(schemaOptions);
       await outbox.ensureSchema();
-      if (rateLimit) await rateLimit.ensureSchema();
+      if (rateLimit) await rateLimit.ensureSchema(schemaOptions);
     }
   };
 
