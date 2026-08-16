@@ -1,6 +1,6 @@
 {
-  "packages/pgredis": "0.6.1",
-  "packages/noredis-ioredis": "0.2.3",
-  "packages/noredis-redis": "0.2.3",
-  "packages/bun-listen": "0.3.1"
+  "packages/pgredis": "0.7.0",
+  "packages/noredis-ioredis": "0.2.4",
+  "packages/noredis-redis": "0.2.4",
+  "packages/bun-listen": "0.3.2"
 }

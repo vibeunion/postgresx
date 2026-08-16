@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-redis-v0.2.3...@postgresx/noredis-redis-v0.2.4) (2026-08-16)
+
+
+### Miscellaneous
+
+* update repository URLs to vibeunion/postgresx ([17b5434](https://github.com/vibeunion/postgresx/commit/17b54349c385688db430e823962b8853108e50fd))
+
 ## [0.2.3](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-redis-v0.2.2...@postgresx/noredis-redis-v0.2.3) (2026-06-27)
 
 
