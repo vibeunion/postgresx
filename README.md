@@ -58,6 +58,11 @@ const session = await redis.cache.get<{ userId: number }>("session:abc");
 await redis.pipeline().set("cache:warm", true).get("cache:warm").exec();
 ```
 
+Cache-style schemas are `UNLOGGED` by default. Use
+`await redis.ensureSchema({ unlogged: false })` when cache, collection, counter,
+or rate-limit data must be WAL-backed; see the package README for crash-recovery,
+replication, and durable-outbox boundaries.
+
 Bun realtime `LISTEN/NOTIFY`:
 
 ```bash
@@ -327,6 +332,10 @@ await redis.ensureSchema();
 await redis.cache.set("session:abc", { userId: 1 }, { ttlMs: 60_000 });
 const session = await redis.cache.get<{ userId: number }>("session:abc");
 ```
+
+缓存类 schema 默认使用 `UNLOGGED` 表。如果缓存、集合、计数器或限流数据需要 WAL 持久化，
+请使用 `await redis.ensureSchema({ unlogged: false })`；崩溃恢复、复制和 durable outbox
+边界详见包 README。
 
 Bun 实时 `LISTEN/NOTIFY`：
 

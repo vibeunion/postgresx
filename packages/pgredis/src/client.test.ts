@@ -48,9 +48,38 @@ describe("createPgredis", () => {
   }
 
   test("ensureSchema creates all sub-schema tables", async () => {
-    const client = createClient();
+    const sql = new ClientSql();
+    const client = createPgredis({
+      sql,
+      namespace: "test",
+      rateLimit: { limit: 10, windowMs: 1000 }
+    });
     await client.ensureSchema();
-    // Should have created schema for: kv, counter, hash, set, list, sorted_set, outbox
+
+    const tableCreations = sql.queries
+      .map(({ query }) => query.replace(/\s+/g, " ").trim())
+      .filter((query) => /^CREATE (?:UNLOGGED )?TABLE IF NOT EXISTS/.test(query));
+    expect(tableCreations).toHaveLength(8);
+    expect(tableCreations.filter((query) => query.includes('"pgredis_rate_limit"'))).toHaveLength(1);
+    expect(tableCreations.find((query) => query.includes('"pgredis_kv"'))).toStartWith("CREATE UNLOGGED TABLE");
+    expect(tableCreations.find((query) => query.includes('"pgredis_outbox"'))).toStartWith("CREATE TABLE");
+  });
+
+  test("ensureSchema can create WAL-backed tables", async () => {
+    const sql = new ClientSql();
+    const client = createPgredis({
+      sql,
+      namespace: "test",
+      rateLimit: { limit: 10, windowMs: 1000 }
+    });
+
+    await client.ensureSchema({ unlogged: false });
+
+    const tableCreations = sql.queries
+      .map(({ query }) => query.replace(/\s+/g, " ").trim())
+      .filter((query) => /^CREATE (?:UNLOGGED )?TABLE IF NOT EXISTS/.test(query));
+    expect(tableCreations).toHaveLength(8);
+    expect(tableCreations.every((query) => !query.startsWith("CREATE UNLOGGED TABLE"))).toBe(true);
   });
 
   test("health returns ok", async () => {

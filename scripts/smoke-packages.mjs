@@ -101,6 +101,7 @@ try {
     import { createRedisJsAdapter as createRedisAlias } from "@postgresx/noredis-redis";
     import { createPgredisSessionStore } from "@postgresx/noredis/adapters/web";
     import { PgKvCache } from "@postgresx/noredis/kv";
+    import { PgKvCache as PgKvCacheFromExplicitSubpath } from "@postgresx/noredis/kv-cache";
     import { PgHash } from "@postgresx/noredis/hash";
     import { PgSet } from "@postgresx/noredis/set";
     import { PgSortedSet } from "@postgresx/noredis/sorted-set";
@@ -118,6 +119,7 @@ try {
     if (typeof createRedisAlias !== "function") throw new Error("noredis-redis alias export missing");
     if (typeof createPgredisSessionStore !== "function") throw new Error("createPgredisSessionStore export missing");
     if (typeof PgKvCache !== "function") throw new Error("PgKvCache subpath export missing");
+    if (typeof PgKvCacheFromExplicitSubpath !== "function") throw new Error("PgKvCache explicit subpath export missing");
     if (typeof PgHash !== "function") throw new Error("PgHash subpath export missing");
     if (typeof PgSet !== "function") throw new Error("PgSet subpath export missing");
     if (typeof PgSortedSet !== "function") throw new Error("PgSortedSet subpath export missing");
@@ -135,6 +137,7 @@ try {
     import { createRedisJsAdapter as createRedisAlias } from "@postgresx/noredis-redis";
     import { createPgredisCacheHelpers } from "@postgresx/noredis/adapters/web";
     import { PgKvCache } from "@postgresx/noredis/kv";
+    import { PgKvCache as PgKvCacheFromExplicitSubpath } from "@postgresx/noredis/kv-cache";
     import { PgHash } from "@postgresx/noredis/hash";
     import { PgSet } from "@postgresx/noredis/set";
     import { PgSortedSet } from "@postgresx/noredis/sorted-set";
@@ -150,6 +153,7 @@ try {
     if (typeof createRedisAlias !== "function") throw new Error("noredis-redis alias export missing");
     if (typeof createPgredisCacheHelpers !== "function") throw new Error("createPgredisCacheHelpers export missing");
     if (typeof PgKvCache !== "function") throw new Error("PgKvCache subpath export missing");
+    if (typeof PgKvCacheFromExplicitSubpath !== "function") throw new Error("PgKvCache explicit subpath export missing");
     if (typeof PgHash !== "function") throw new Error("PgHash subpath export missing");
     if (typeof PgSet !== "function") throw new Error("PgSet subpath export missing");
     if (typeof PgSortedSet !== "function") throw new Error("PgSortedSet subpath export missing");

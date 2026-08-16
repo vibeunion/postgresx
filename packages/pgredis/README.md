@@ -140,6 +140,18 @@ await cache.persist("token:abc");
 await cache.touch("token:abc");
 ```
 
+Cache, counter, collection, and rate-limit schemas default to PostgreSQL
+`UNLOGGED` tables. They survive a clean restart, but PostgreSQL truncates them
+after crash recovery and does not replicate them to standbys. Use
+`ensureSchema({ unlogged: false })` when those values require WAL-backed
+persistence. The unified client applies the option to every cache-style schema:
+
+```ts
+await pg.ensureSchema({ unlogged: false });
+```
+
+The durable outbox remains logged regardless of this option.
+
 Use `serializer` when values need an application envelope before they are stored
 as JSONB:
 
@@ -672,6 +684,16 @@ await cache.expire("token:abc", 60_000);
 await cache.persist("token:abc");
 await cache.touch("token:abc");
 ```
+
+缓存、计数器、集合和限流 schema 默认使用 PostgreSQL `UNLOGGED` 表。它们能在正常重启后保留，
+但 PostgreSQL 会在崩溃恢复时清空这些表，而且不会把它们复制到备库。需要 WAL 持久化时，请使用
+`ensureSchema({ unlogged: false })`。统一客户端会把该选项应用到全部缓存类 schema：
+
+```ts
+await pg.ensureSchema({ unlogged: false });
+```
+
+durable outbox 不受该选项影响，始终保持 logged。
 
 ## 统一客户端
 
