@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.7.0...@postgresx/noredis-v0.7.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* resolve code quality findings ([#17](https://github.com/vibeunion/postgresx/issues/17)) ([c613f6c](https://github.com/vibeunion/postgresx/commit/c613f6c3f16a1c107f2a93f82d44a41b71dd5b03))
+
 ## [0.7.0](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.6.1...@postgresx/noredis-v0.7.0) (2026-08-16)
 
 
