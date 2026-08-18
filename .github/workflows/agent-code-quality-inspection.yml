@@ -1,0 +1,44 @@
+name: Agent Code Quality Inspection
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  code-quality: read
+
+jobs:
+  findings:
+    if: github.head_ref == 'agent/fix-code-quality-findings'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch open Code Quality findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh api --paginate --slurp \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/${GITHUB_REPOSITORY}/code-quality/findings?state=open&per_page=100" \
+            | jq 'add' > findings.json
+
+          count="$(jq 'length' findings.json)"
+          echo "OPEN_CODE_QUALITY_FINDINGS=${count}"
+
+          if [[ "${count}" -eq 0 ]]; then
+            exit 0
+          fi
+
+          while IFS= read -r finding_number; do
+            echo "::group::Code Quality finding #${finding_number}"
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "/repos/${GITHUB_REPOSITORY}/code-quality/findings/${finding_number}" \
+              | jq -c '{number, state, rule, location, message, created_at}'
+            echo "::endgroup::"
+          done < <(jq -r '.[].number' findings.json)
