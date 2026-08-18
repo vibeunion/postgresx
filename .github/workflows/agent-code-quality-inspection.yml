@@ -1,44 +1,98 @@
-name: Agent Code Quality Inspection
+name: Agent Code Quality Remediation
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [synchronize]
 
 permissions:
-  contents: read
-  code-quality: read
+  contents: write
 
 jobs:
-  findings:
+  remediate:
     if: github.head_ref == 'agent/fix-code-quality-findings'
     runs-on: ubuntu-latest
-    steps:
-      - name: Fetch open Code Quality findings
+    services:
+      postgres:
+        image: postgres:18-alpine
         env:
-          GH_TOKEN: ${{ github.token }}
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pgredis
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pgredis"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Apply focused fixes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          integration = Path("packages/pgredis/src/integration.test.ts")
+          integration_text = integration.read_text()
+          old_cleanup = '''      await Promise.allSettled([
+                writerSql.close(),
+                contenderSql.close(),
+                reopenedSql?.close() ?? Promise.resolve()
+              ]);'''
+          new_cleanup = '''      const closePromises = [writerSql.close(), contenderSql.close()];
+              if (reopenedSql) {
+                closePromises.push(reopenedSql.close());
+              }
+              await Promise.allSettled(closePromises);'''
+          if old_cleanup not in integration_text:
+              raise SystemExit("expected integration cleanup block was not found")
+          integration.write_text(integration_text.replace(old_cleanup, new_cleanup, 1))
+
+          ioredis_test = Path("packages/pgredis/src/adapters/ioredis.test.ts")
+          ioredis_text = ioredis_test.read_text()
+          unused_import = 'import { UnsupportedCommandError } from "../errors";\n'
+          if unused_import not in ioredis_text:
+              raise SystemExit("expected unused import was not found")
+          ioredis_test.write_text(ioredis_text.replace(unused_import, "", 1))
+          PY
+
+          git diff --check
+          git diff -- packages/pgredis/src/integration.test.ts packages/pgredis/src/adapters/ioredis.test.ts
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Type check
+        run: bun run check
+
+      - name: Run affected unit test
+        run: bun test packages/pgredis/src/adapters/ioredis.test.ts
+
+      - name: Run PostgreSQL integration tests
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/pgredis
+        run: bun run test:integration
+
+      - name: Commit fixes
         shell: bash
         run: |
           set -euo pipefail
-
-          gh api --paginate --slurp \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "/repos/${GITHUB_REPOSITORY}/code-quality/findings?state=open&per_page=100" \
-            | jq 'add' > findings.json
-
-          count="$(jq 'length' findings.json)"
-          echo "OPEN_CODE_QUALITY_FINDINGS=${count}"
-
-          if [[ "${count}" -eq 0 ]]; then
-            exit 0
-          fi
-
-          while IFS= read -r finding_number; do
-            echo "::group::Code Quality finding #${finding_number}"
-            gh api \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2026-03-10' \
-              "/repos/${GITHUB_REPOSITORY}/code-quality/findings/${finding_number}" \
-              | jq -c '{number, state, rule, location, message, created_at}'
-            echo "::endgroup::"
-          done < <(jq -r '.[].number' findings.json)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/pgredis/src/integration.test.ts packages/pgredis/src/adapters/ioredis.test.ts
+          git commit -m "fix: resolve code quality findings"
+          git push origin "HEAD:${GITHUB_HEAD_REF}"
