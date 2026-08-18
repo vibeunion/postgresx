@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { createIoredisAdapter, type IoredisLikeAdapter } from "./ioredis";
-import { UnsupportedCommandError } from "../errors";
 
 function createMockClient(): any {
   return {

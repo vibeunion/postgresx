@@ -225,7 +225,7 @@ describe("PostgreSQL integration", () => {
       await Promise.allSettled([
         writerSql.close(),
         contenderSql.close(),
-        reopenedSql?.close() ?? Promise.resolve()
+        reopenedSql ? reopenedSql.close() : Promise.resolve()
       ]);
     }
   });
