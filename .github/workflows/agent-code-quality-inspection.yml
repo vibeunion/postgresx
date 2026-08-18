@@ -48,19 +48,13 @@ jobs:
 
           integration = Path("packages/pgredis/src/integration.test.ts")
           integration_text = integration.read_text()
-          old_cleanup = '''      await Promise.allSettled([
-                writerSql.close(),
-                contenderSql.close(),
-                reopenedSql?.close() ?? Promise.resolve()
-              ]);'''
-          new_cleanup = '''      const closePromises = [writerSql.close(), contenderSql.close()];
-              if (reopenedSql) {
-                closePromises.push(reopenedSql.close());
-              }
-              await Promise.allSettled(closePromises);'''
-          if old_cleanup not in integration_text:
-              raise SystemExit("expected integration cleanup block was not found")
-          integration.write_text(integration_text.replace(old_cleanup, new_cleanup, 1))
+          missing_await_expression = "reopenedSql?.close() ?? Promise.resolve()"
+          awaited_expression = "reopenedSql ? reopenedSql.close() : Promise.resolve()"
+          if missing_await_expression not in integration_text:
+              raise SystemExit("expected optional close expression was not found")
+          integration.write_text(
+              integration_text.replace(missing_await_expression, awaited_expression, 1)
+          )
 
           ioredis_test = Path("packages/pgredis/src/adapters/ioredis.test.ts")
           ioredis_text = ioredis_test.read_text()
