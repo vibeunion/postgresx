@@ -418,11 +418,13 @@ export class PgKvCache {
        WHERE ctid IN (
          SELECT ctid
          FROM ${this.quotedTableName}
-         WHERE expires_at IS NOT NULL AND expires_at <= NOW()
-         LIMIT $1
+         WHERE namespace = $1
+           AND expires_at IS NOT NULL
+           AND expires_at <= NOW()
+         LIMIT $2
        )
        RETURNING namespace, key`,
-      [Math.max(1, Math.floor(limit))]
+      [this.namespace, Math.max(1, Math.floor(limit))]
     );
     for (const row of rows) {
       if (row.namespace === this.namespace) this.deleteL1(row.key);

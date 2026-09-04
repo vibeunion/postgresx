@@ -158,9 +158,12 @@ class MockSql implements BunSqlLike {
 
     if (normalized.startsWith("DELETE FROM") && normalized.includes("EXPIRES_AT IS NOT NULL")) {
       const deleted: Array<{ namespace: string; key: string }> = [];
+      const namespaceFilter = normalized.includes("NAMESPACE = $1") ? String(params[0]) : null;
       for (const [compoundKey, row] of this.rows.entries()) {
+        const [namespace] = compoundKey.split("\0");
+        if (namespaceFilter !== null && namespace !== namespaceFilter) continue;
         if (row.expiresAt !== null && row.expiresAt <= this.now) {
-          const [namespace, key] = compoundKey.split("\0");
+          const [, key] = compoundKey.split("\0");
           this.rows.delete(compoundKey);
           deleted.push({ namespace: namespace!, key: key! });
         }
@@ -742,4 +745,18 @@ describe("PgKvCache", () => {
     sql.now += 10;
     const deleted = await cache.cleanupExpired();
     expect(deleted).toBe(1);
+  });
+
+  test("cleanupExpired never removes expired rows from another namespace", async () => {
+    const sql = new MockSql();
+    const auth = new PgKvCache({ sql, namespace: "auth", l1: false, now: () => sql.now });
+    const cache = new PgKvCache({ sql, namespace: "cache", l1: false, now: () => sql.now });
+
+    await auth.set("expired-auth", { v: 1 }, { ttlMs: 5 });
+    await cache.set("expired-cache", { v: 1 }, { ttlMs: 5 });
+    sql.now += 10;
+
+    expect(await cache.cleanupExpired()).toBe(1);
+    expect(sql.rows.has("cache\0expired-cache")).toBe(false);
+    expect(sql.rows.has("auth\0expired-auth")).toBe(true);
   });
