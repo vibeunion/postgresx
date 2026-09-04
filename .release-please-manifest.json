@@ -1,5 +1,5 @@
 {
-  "packages/pgredis": "0.7.1",
+  "packages/pgredis": "0.7.2",
   "packages/noredis-ioredis": "0.2.4",
   "packages/noredis-redis": "0.2.4",
   "packages/bun-listen": "0.3.2"
