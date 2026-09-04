@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.7.1...@postgresx/noredis-v0.7.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* **pgredis:** scope expired cleanup to namespace ([6093d2d](https://github.com/vibeunion/postgresx/commit/6093d2dcdd870a79339036fb7a68d8903a95b417))
+
 ## [0.7.1](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.7.0...@postgresx/noredis-v0.7.1) (2026-08-18)
 
 
