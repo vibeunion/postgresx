@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.8.1...@postgresx/noredis-v0.9.0) (2026-09-24)
+
+
+### Features
+
+* **noredis:** coalesce concurrent reads for the same key ([#25](https://github.com/vibeunion/postgresx/issues/25)) ([1f94b61](https://github.com/vibeunion/postgresx/commit/1f94b61ddbc8f77a8fb71bd15690bb62ecaff7a2))
+
 ## [0.8.1](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.8.0...@postgresx/noredis-v0.8.1) (2026-09-24)
 
 
