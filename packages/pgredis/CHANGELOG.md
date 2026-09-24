@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.10.0...@postgresx/noredis-v0.11.0) (2026-09-24)
+
+
+### Features
+
+* **noredis:** bound L1 by bytes and reject oversized values ([#29](https://github.com/vibeunion/postgresx/issues/29)) ([92d601f](https://github.com/vibeunion/postgresx/commit/92d601f318dea586e900f77db97cde28725acaa6))
+
 ## [0.10.0](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.9.0...@postgresx/noredis-v0.10.0) (2026-09-24)
 
 
