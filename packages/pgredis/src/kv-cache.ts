@@ -15,6 +15,16 @@ export interface PgKvCacheL1Options {
    * set/delete notification clears the entry immediately.
    */
   negativeTtlMs?: number;
+  /**
+   * Evict least-recently-used entries once the approximate cache size exceeds
+   * this many bytes. Defaults to 0 (no byte cap; only `max` entries apply).
+   */
+  maxBytes?: number;
+  /**
+   * Refuse to cache any single value larger than this many bytes. Defaults to
+   * 0 (no per-value limit).
+   */
+  maxEntryBytes?: number;
 }
 
 export interface PgKvCacheNotifyOptions {
@@ -101,12 +111,17 @@ export interface PgKvCacheStats {
   inflightReads: number;
   /** Monotonic count of reads that joined an in-flight query for the same key. */
   coalescedReads: number;
+  /** Approximate bytes currently held by L1 (0 when byte accounting is off). */
+  l1Bytes: number;
+  /** Configured byte cap, or 0 when unlimited. */
+  l1MaxBytes: number;
 }
 
 interface L1Entry<T = unknown> {
   value: T;
   expiresAt: number | null;
   negative?: boolean;
+  bytes?: number;
 }
 
 interface CacheRow {
@@ -120,6 +135,16 @@ const DEFAULT_NAMESPACE = "default";
 const DEFAULT_L1_MAX = 10_000;
 const DEFAULT_L1_TTL_MS = 60_000;
 const DEFAULT_NOTIFY_CHANNEL = "pg_kv_cache_invalidate";
+const textEncoder = new TextEncoder();
+
+function estimateValueBytes(value: unknown): number {
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? 0 : textEncoder.encode(json).length;
+  } catch {
+    return 0;
+  }
+}
 
 function randomId(): string {
   const cryptoApi = globalThis.crypto;
@@ -210,6 +235,8 @@ export class PgKvCache {
   private readonly l1Max: number;
   private readonly l1TtlMs: number;
   private readonly l1NegativeTtlMs: number;
+  private readonly l1MaxBytes: number;
+  private readonly l1MaxEntryBytes: number;
   private readonly notifyEnabled: boolean;
   private readonly serializer: PgKvSerializer;
   private readonly singleflight: boolean;
@@ -220,6 +247,7 @@ export class PgKvCache {
   private l1Misses = 0;
   private l1NegativeHits = 0;
   private l1Paused = false;
+  private l1Bytes = 0;
   private coalescedReads = 0;
   private invalidationListener: PgListenerHandle | null = null;
   private invalidationUnsubscribers: Array<() => void> = [];
@@ -238,6 +266,14 @@ export class PgKvCache {
     this.l1NegativeTtlMs =
       options.l1 && options.l1.negativeTtlMs !== undefined && options.l1.negativeTtlMs > 0
         ? options.l1.negativeTtlMs
+        : 0;
+    this.l1MaxBytes =
+      options.l1 && options.l1.maxBytes !== undefined && options.l1.maxBytes > 0
+        ? options.l1.maxBytes
+        : 0;
+    this.l1MaxEntryBytes =
+      options.l1 && options.l1.maxEntryBytes !== undefined && options.l1.maxEntryBytes > 0
+        ? options.l1.maxEntryBytes
         : 0;
 
     this.notifyEnabled = options.notify !== false && options.notify?.enabled !== false;
@@ -628,7 +664,7 @@ export class PgKvCache {
 
   invalidateAll(): void {
     this.l1Generation += 1;
-    this.l1.clear();
+    this.clearL1();
   }
 
   startInvalidationListener(
@@ -684,13 +720,18 @@ export class PgKvCache {
   private pauseL1(): void {
     this.l1Paused = true;
     this.l1Generation += 1;
-    this.l1.clear();
+    this.clearL1();
   }
 
   private resumeL1(): void {
     this.l1Generation += 1;
-    this.l1.clear();
+    this.clearL1();
     this.l1Paused = false;
+  }
+
+  private clearL1(): void {
+    this.l1.clear();
+    this.l1Bytes = 0;
   }
 
   handleNotification(payload: string | PgKvNotification): boolean {
@@ -705,7 +746,7 @@ export class PgKvCache {
       if (!event.prefix) return false;
       this.l1Generation += 1;
       for (const key of this.l1.keys()) {
-        if (key.startsWith(event.prefix)) this.l1.delete(key);
+        if (key.startsWith(event.prefix)) this.removeEntry(key);
       }
       return true;
     }
@@ -873,7 +914,9 @@ export class PgKvCache {
       l1NegativeHits: this.l1NegativeHits,
       l1Paused: this.l1Paused,
       inflightReads: this.inflight.size,
-      coalescedReads: this.coalescedReads
+      coalescedReads: this.coalescedReads,
+      l1Bytes: this.l1Bytes,
+      l1MaxBytes: this.l1MaxBytes
     };
   }
 
@@ -942,7 +985,7 @@ export class PgKvCache {
       return { hit: false };
     }
     if (entry.expiresAt !== null && entry.expiresAt <= this.now()) {
-      this.l1.delete(key);
+      this.removeEntry(key);
       this.l1Misses += 1;
       return { hit: false };
     }
@@ -956,12 +999,23 @@ export class PgKvCache {
     return { hit: true, value: entry.value as T };
   }
 
+  private removeEntry(key: string): void {
+    const entry = this.l1.get(key);
+    if (!entry) return;
+    this.l1.delete(key);
+    this.l1Bytes -= entry.bytes ?? 0;
+  }
+
+  private tracksBytes(): boolean {
+    return this.l1MaxBytes > 0 || this.l1MaxEntryBytes > 0;
+  }
+
   private setNegativeL1(key: string, generation = this.l1Generation): void {
     if (!this.l1Enabled || this.l1Paused || this.l1Max <= 0 || this.l1NegativeTtlMs <= 0) return;
     if (generation !== this.l1Generation) return;
     const expiresAt = this.now() + this.l1NegativeTtlMs;
-    this.l1.delete(key);
-    this.l1.set(key, { value: null, expiresAt, negative: true });
+    this.removeEntry(key);
+    this.l1.set(key, { value: null, expiresAt, negative: true, bytes: 0 });
     this.enforceL1Max();
   }
 
@@ -970,11 +1024,17 @@ export class PgKvCache {
     if (generation !== this.l1Generation) return;
     const l1ExpiresAt = this.computeL1ExpiresAt(l2ExpiresAt);
     if (l1ExpiresAt !== null && l1ExpiresAt <= this.now()) {
-      this.l1.delete(key);
+      this.removeEntry(key);
       return;
     }
-    this.l1.delete(key);
-    this.l1.set(key, { value, expiresAt: l1ExpiresAt });
+    const bytes = this.tracksBytes() ? estimateValueBytes(value) : 0;
+    if (this.l1MaxEntryBytes > 0 && bytes > this.l1MaxEntryBytes) {
+      this.removeEntry(key);
+      return;
+    }
+    this.removeEntry(key);
+    this.l1.set(key, { value, expiresAt: l1ExpiresAt, bytes });
+    this.l1Bytes += bytes;
     this.enforceL1Max();
   }
 
@@ -988,22 +1048,22 @@ export class PgKvCache {
   private deleteL1(key: string): void {
     if (!this.l1Enabled) return;
     this.l1Generation += 1;
-    this.l1.delete(key);
+    this.removeEntry(key);
   }
 
   private cleanupL1(): void {
     if (!this.l1Enabled) return;
     const now = this.now();
     for (const [key, entry] of this.l1.entries()) {
-      if (entry.expiresAt !== null && entry.expiresAt <= now) this.l1.delete(key);
+      if (entry.expiresAt !== null && entry.expiresAt <= now) this.removeEntry(key);
     }
   }
 
   private enforceL1Max(): void {
-    while (this.l1.size > this.l1Max) {
+    while (this.l1.size > this.l1Max || (this.l1MaxBytes > 0 && this.l1Bytes > this.l1MaxBytes)) {
       const oldest = this.l1.keys().next();
       if (oldest.done) return;
-      this.l1.delete(oldest.value);
+      this.removeEntry(oldest.value);
     }
   }
 }
