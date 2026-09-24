@@ -299,6 +299,11 @@ Concurrent reads of the same key are coalesced into a single Postgres
 round-trip by default. Disable it with `singleflight: false`; `stats()`
 reports `inflightReads` and the monotonic `coalescedReads` counter.
 
+Repeated reads of an absent key each reach Postgres unless you opt into a
+short negative cache. Set `l1: { negativeTtlMs: 250 }` to remember a miss for
+at most 250ms; `set()` and delete notifications clear the entry immediately,
+and `stats()` counts those reads separately as `l1NegativeHits`.
+
 ## Pub/Sub
 
 Publishing uses only the configured SQL adapter. Bun LISTEN/NOTIFY consumption
