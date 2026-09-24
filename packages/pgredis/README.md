@@ -286,7 +286,11 @@ pg.cache.stopInvalidationListener();
 
 Remote notifications invalidate matching L1 entries. A listener reconnect
 clears the complete L1 cache by default so notifications missed during the
-disconnect cannot leave stale entries behind. `getset()` runs in a retried
+disconnect cannot leave stale entries behind. By default the cache also
+pauses L1 while the listener is unhealthy: `close`, `error`, and `reconnect`
+events clear and bypass L1, and the listener's `connected` event clears and
+resumes it. Set `notify.pauseOnDisconnect: false` to keep serving L1 through
+disconnects at the cost of potentially stale reads. `getset()` runs in a retried
 serializable transaction and therefore requires an adapter with `begin()`;
 the built-in Bun and Node adapters provide it. `getdel()` uses one atomic
 `DELETE ... RETURNING` statement.
