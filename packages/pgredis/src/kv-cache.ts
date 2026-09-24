@@ -15,6 +15,8 @@ export interface PgKvCacheNotifyOptions {
   enabled?: boolean;
   listener?: PgKvCacheListenerFactory;
   clearL1OnReconnect?: boolean;
+  /** Pause L1 reads and fills while the invalidation listener is unhealthy. Defaults to true. */
+  pauseOnDisconnect?: boolean;
 }
 
 export interface PgKvCacheListenerFactoryOptions {
@@ -26,6 +28,8 @@ export type PgKvCacheListenerFactory = (options: PgKvCacheListenerFactoryOptions
 
 export interface PgKvCacheInvalidationOptions {
   clearL1OnReconnect?: boolean;
+  /** Pause L1 reads and fills while the invalidation listener is unhealthy. Defaults to true. */
+  pauseOnDisconnect?: boolean;
 }
 
 export interface PgKvCacheOptions {
@@ -77,6 +81,8 @@ export interface PgKvCacheStats {
   l1Hits: number;
   /** Monotonic L1 read misses (absent or expired) since the cache was created. */
   l1Misses: number;
+  /** True while L1 is bypassed because the invalidation listener is unhealthy. */
+  l1Paused: boolean;
 }
 
 interface L1Entry<T = unknown> {
@@ -190,8 +196,9 @@ export class PgKvCache {
   private l1Generation = 0;
   private l1Hits = 0;
   private l1Misses = 0;
+  private l1Paused = false;
   private invalidationListener: PgListenerHandle | null = null;
-  private invalidationReconnectUnsubscribe: (() => void) | null = null;
+  private invalidationUnsubscribers: Array<() => void> = [];
 
   constructor(options: PgKvCacheOptions) {
     this.sql = options.sql;
@@ -215,7 +222,8 @@ export class PgKvCache {
     const listenerFactory = this.resolveNotifyOptions(options.notify)?.listener;
     if (listenerFactory) {
       this.startInvalidationListener(listenerFactory, {
-        clearL1OnReconnect: this.resolveNotifyOptions(options.notify)?.clearL1OnReconnect
+        clearL1OnReconnect: this.resolveNotifyOptions(options.notify)?.clearL1OnReconnect,
+        pauseOnDisconnect: this.resolveNotifyOptions(options.notify)?.pauseOnDisconnect
       });
     }
   }
@@ -585,22 +593,54 @@ export class PgKvCache {
         if (channel === this.notifyChannel) this.handleNotification(payload);
       }
     });
-    const reconnectUnsubscribe = options.clearL1OnReconnect === false
-      ? null
-      : listener.on("reconnect", () => this.invalidateAll());
+
+    const unsubscribers: Array<() => void> = [];
+    if (options.pauseOnDisconnect !== false) {
+      // While no live LISTEN is confirmed, remote writes may be missed; L1 must
+      // neither serve nor accept entries until "connected" fires again.
+      unsubscribers.push(listener.on("close", () => this.pauseL1()));
+      unsubscribers.push(listener.on("error", () => this.pauseL1()));
+      unsubscribers.push(listener.on("reconnect", () => this.pauseL1()));
+      unsubscribers.push(listener.on("connected", () => this.resumeL1()));
+    }
+    if (options.clearL1OnReconnect !== false) {
+      unsubscribers.push(listener.on("reconnect", () => this.invalidateAll()));
+    }
 
     this.invalidationListener = listener;
-    this.invalidationReconnectUnsubscribe = reconnectUnsubscribe;
+    this.invalidationUnsubscribers = unsubscribers;
+
+    if (options.pauseOnDisconnect !== false) {
+      // A freshly attached listener either confirms a live LISTEN (resume, dropping
+      // anything cached while unwatched) or is unhealthy (stay paused).
+      if (listener.getHealth().connected) {
+        this.resumeL1();
+      } else {
+        this.pauseL1();
+      }
+    }
     return listener;
   }
 
   stopInvalidationListener(): void {
     const listener = this.invalidationListener;
-    const reconnectUnsubscribe = this.invalidationReconnectUnsubscribe;
+    const unsubscribers = this.invalidationUnsubscribers;
     this.invalidationListener = null;
-    this.invalidationReconnectUnsubscribe = null;
-    reconnectUnsubscribe?.();
+    this.invalidationUnsubscribers = [];
+    for (const unsubscribe of unsubscribers) unsubscribe();
     listener?.close();
+  }
+
+  private pauseL1(): void {
+    this.l1Paused = true;
+    this.l1Generation += 1;
+    this.l1.clear();
+  }
+
+  private resumeL1(): void {
+    this.l1Generation += 1;
+    this.l1.clear();
+    this.l1Paused = false;
   }
 
   handleNotification(payload: string | PgKvNotification): boolean {
@@ -779,7 +819,8 @@ export class PgKvCache {
       l1Size: this.l1.size,
       l1Max: this.l1Max,
       l1Hits: this.l1Hits,
-      l1Misses: this.l1Misses
+      l1Misses: this.l1Misses,
+      l1Paused: this.l1Paused
     };
   }
 
@@ -841,7 +882,7 @@ export class PgKvCache {
   }
 
   private getL1<T>(key: string): { hit: true; value: T | null } | { hit: false } {
-    if (!this.l1Enabled) return { hit: false };
+    if (!this.l1Enabled || this.l1Paused) return { hit: false };
     const entry = this.l1.get(key);
     if (!entry) {
       this.l1Misses += 1;
@@ -859,7 +900,7 @@ export class PgKvCache {
   }
 
   private setL1<T>(key: string, value: T, l2ExpiresAt: number | null, generation = this.l1Generation): void {
-    if (!this.l1Enabled || this.l1Max <= 0) return;
+    if (!this.l1Enabled || this.l1Paused || this.l1Max <= 0) return;
     if (generation !== this.l1Generation) return;
     const l1ExpiresAt = this.computeL1ExpiresAt(l2ExpiresAt);
     if (l1ExpiresAt !== null && l1ExpiresAt <= this.now()) {

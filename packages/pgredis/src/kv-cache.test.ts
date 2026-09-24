@@ -292,6 +292,7 @@ class DelayedReadSql extends MockSql {
 
 class FakeListener implements PgListenerHandle {
   closeCalls = 0;
+  connected = true;
   private readonly listeners = new Map<
     keyof PgListenerEvents,
     Set<(payload: PgListenerEvents[keyof PgListenerEvents]) => void>
@@ -304,9 +305,10 @@ class FakeListener implements PgListenerHandle {
   async notify(): Promise<void> {}
 
   getHealth(): PgListenerHealth {
+    const connected = this.connected && this.closeCalls === 0;
     return {
-      status: this.closeCalls > 0 ? "closed" : "connected",
-      connected: this.closeCalls === 0,
+      status: connected ? "connected" : "closed",
+      connected,
       listeningChannels: [],
       queuedQueries: 0,
       activeQuery: false,
@@ -584,6 +586,72 @@ describe("PgKvCache", () => {
 
     await expect(pendingRead).resolves.toEqual({ userId: 1 });
     expect(cache.stats().l1Size).toBe(0);
+  });
+
+  test("pauses L1 reads and fills while the listener is unhealthy", async () => {
+    const sql = new MockSql();
+    const listener = new FakeListener();
+    const cache = new PgKvCache({ sql, namespace: "auth" });
+    cache.startInvalidationListener(() => listener);
+
+    await cache.set("token", { userId: 1 });
+    expect(cache.stats()).toMatchObject({ l1Size: 1, l1Paused: false });
+
+    listener.emit("close", { willReconnect: true });
+    expect(cache.stats()).toMatchObject({ l1Size: 0, l1Paused: true });
+
+    const queryCountBeforeRead = sql.queries.length;
+    await expect(cache.get("token")).resolves.toEqual({ userId: 1 });
+    expect(sql.queries.length).toBeGreaterThan(queryCountBeforeRead);
+    expect(cache.stats().l1Size).toBe(0);
+
+    await cache.set("token", { userId: 1 });
+    expect(cache.stats().l1Size).toBe(0);
+
+    listener.emit("connected", listener.getHealth());
+    expect(cache.stats().l1Paused).toBe(false);
+    await cache.set("token", { userId: 1 });
+    expect(cache.stats().l1Size).toBe(1);
+  });
+
+  test("starts paused when the listener was never connected", async () => {
+    const sql = new MockSql();
+    const listener = new FakeListener();
+    listener.connected = false;
+    const cache = new PgKvCache({ sql, namespace: "auth" });
+    cache.startInvalidationListener(() => listener);
+
+    expect(cache.stats().l1Paused).toBe(true);
+    await cache.set("token", { userId: 1 });
+    expect(cache.stats().l1Size).toBe(0);
+
+    listener.connected = true;
+    listener.emit("connected", listener.getHealth());
+    await cache.set("token", { userId: 1 });
+    expect(cache.stats()).toMatchObject({ l1Size: 1, l1Paused: false });
+  });
+
+  test("keeps L1 active when pauseOnDisconnect is disabled", async () => {
+    const sql = new MockSql();
+    const listener = new FakeListener();
+    const cache = new PgKvCache({ sql, namespace: "auth" });
+    cache.startInvalidationListener(() => listener, { pauseOnDisconnect: false });
+
+    await cache.set("token", { userId: 1 });
+    listener.emit("close", { willReconnect: true });
+    expect(cache.stats()).toMatchObject({ l1Size: 1, l1Paused: false });
+  });
+
+  test("stops listening for health events once the listener is stopped", async () => {
+    const sql = new MockSql();
+    const listener = new FakeListener();
+    const cache = new PgKvCache({ sql, namespace: "auth" });
+    cache.startInvalidationListener(() => listener);
+    await cache.set("token", { userId: 1 });
+
+    cache.stopInvalidationListener();
+    listener.emit("close", { willReconnect: false });
+    expect(cache.stats()).toMatchObject({ l1Size: 1, l1Paused: false });
   });
 });
 
