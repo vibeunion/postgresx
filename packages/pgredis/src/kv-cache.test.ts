@@ -769,6 +769,65 @@ describe("PgKvCache", () => {
     await expect(pending).resolves.toBeNull();
     expect(cache.stats()).toMatchObject({ l1NegativeHits: 0, l1Size: 0 });
   });
+
+  test("evicts least-recently-used entries when maxBytes is exceeded", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "bytes", l1: { maxBytes: 100 } });
+    const chunk = "x".repeat(40);
+
+    await cache.set("a", chunk);
+    await cache.set("b", chunk);
+    await cache.get("a");
+    await cache.set("c", chunk);
+
+    expect(cache.stats().l1Bytes).toBeLessThanOrEqual(100);
+    const selects = sql.queries.filter((entry) => entry.query.includes("SELECT value")).length;
+    await cache.get("b");
+    expect(sql.queries.filter((entry) => entry.query.includes("SELECT value"))).toHaveLength(selects + 1);
+    await cache.get("c");
+    expect(sql.queries.filter((entry) => entry.query.includes("SELECT value"))).toHaveLength(selects + 1);
+  });
+
+  test("does not admit values larger than maxEntryBytes", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "big-entry", l1: { maxEntryBytes: 16 } });
+
+    await cache.set("big", "x".repeat(100));
+    expect(cache.stats()).toMatchObject({ l1Size: 0, l1Bytes: 0 });
+    await cache.set("small", "ok");
+    expect(cache.stats()).toMatchObject({ l1Size: 1, l1Bytes: 4 });
+  });
+
+  test("resets byte accounting on invalidation", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "bytes-clear", l1: { maxBytes: 10_000 } });
+
+    await cache.set("a", "x".repeat(40));
+    await cache.set("b", "x".repeat(40));
+    expect(cache.stats().l1Bytes).toBeGreaterThan(0);
+
+    cache.invalidate("a");
+    expect(cache.stats().l1Bytes).toBeGreaterThan(0);
+    cache.invalidateAll();
+    expect(cache.stats()).toMatchObject({ l1Bytes: 0, l1Size: 0 });
+  });
+
+  test("resets byte accounting when a prefix is cleared", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "bytes-prefix", l1: { maxBytes: 10_000 } });
+
+    await cache.set("user:1", "x".repeat(40));
+    await cache.set("user:2", "x".repeat(40));
+    expect(cache.stats().l1Bytes).toBeGreaterThan(0);
+
+    cache.handleNotification({
+      namespace: "bytes-prefix",
+      prefix: "user:",
+      op: "clearPrefix",
+      senderId: "remote"
+    });
+    expect(cache.stats()).toMatchObject({ l1Bytes: 0, l1Size: 0 });
+  });
 });
 
   test("NX: set only when key is missing", async () => {

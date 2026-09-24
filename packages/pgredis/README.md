@@ -304,6 +304,11 @@ short negative cache. Set `l1: { negativeTtlMs: 250 }` to remember a miss for
 at most 250ms; `set()` and delete notifications clear the entry immediately,
 and `stats()` counts those reads separately as `l1NegativeHits`.
 
+L1 eviction is by entry count (`l1.max`) and, when configured, by approximate
+bytes. Set `l1: { maxBytes: 8_388_608, maxEntryBytes: 65_536 }` to cap the
+cache and refuse oversized single values; `stats()` reports `l1Bytes` and
+`l1MaxBytes`.
+
 ## Pub/Sub
 
 Publishing uses only the configured SQL adapter. Bun LISTEN/NOTIFY consumption
