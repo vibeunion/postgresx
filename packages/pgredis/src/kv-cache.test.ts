@@ -700,6 +700,75 @@ describe("PgKvCache", () => {
     expect(sql.queries.filter((entry) => entry.query.includes("SELECT value"))).toHaveLength(3);
     expect(cache.stats().coalescedReads).toBe(0);
   });
+
+  test("does not cache misses by default", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "negative-off" });
+
+    await expect(cache.get("absent")).resolves.toBeNull();
+    await expect(cache.get("absent")).resolves.toBeNull();
+    expect(sql.queries.filter((entry) => entry.query.includes("SELECT value"))).toHaveLength(2);
+    expect(cache.stats()).toMatchObject({ l1NegativeHits: 0, l1Size: 0 });
+  });
+
+  test("serves repeated misses from the negative cache", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "negative", l1: { negativeTtlMs: 250 } });
+
+    await expect(cache.get("absent")).resolves.toBeNull();
+    await expect(cache.get("absent")).resolves.toBeNull();
+    expect(sql.queries.filter((entry) => entry.query.includes("SELECT value"))).toHaveLength(1);
+    expect(cache.stats()).toMatchObject({ l1NegativeHits: 1, l1Misses: 1, l1Size: 1 });
+  });
+
+  test("expires cached misses after negativeTtlMs", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({
+      sql,
+      namespace: "negative-ttl",
+      l1: { negativeTtlMs: 250 },
+      now: () => sql.now
+    });
+
+    await cache.get("absent");
+    sql.now += 300;
+    await cache.get("absent");
+    expect(sql.queries.filter((entry) => entry.query.includes("SELECT value"))).toHaveLength(2);
+  });
+
+  test("a write replaces a cached miss", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "negative-set", l1: { negativeTtlMs: 250 } });
+
+    await cache.get("token");
+    await cache.set("token", { userId: 1 });
+    const selects = sql.queries.filter((entry) => entry.query.includes("SELECT value")).length;
+    await expect(cache.get("token")).resolves.toEqual({ userId: 1 });
+    expect(sql.queries.filter((entry) => entry.query.includes("SELECT value"))).toHaveLength(selects);
+  });
+
+  test("invalidation clears a cached miss", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "negative-invalidate", l1: { negativeTtlMs: 5_000 } });
+
+    await cache.get("token");
+    cache.invalidate("token");
+    await cache.get("token");
+    expect(sql.queries.filter((entry) => entry.query.includes("SELECT value"))).toHaveLength(2);
+  });
+
+  test("does not backfill a cached miss invalidated during the read", async () => {
+    const sql = new DelayedReadSql();
+    const cache = new PgKvCache({ sql, namespace: "negative-race", l1: { negativeTtlMs: 5_000 } });
+
+    const pending = cache.get("absent");
+    await sql.readStarted;
+    cache.invalidate("absent");
+    sql.releaseRead();
+
+    await expect(pending).resolves.toBeNull();
+    expect(cache.stats()).toMatchObject({ l1NegativeHits: 0, l1Size: 0 });
+  });
 });
 
   test("NX: set only when key is missing", async () => {

@@ -8,6 +8,13 @@ export interface BunSqlLike {
 export interface PgKvCacheL1Options {
   max?: number;
   ttlMs?: number;
+  /**
+   * Cache L2 misses for this many milliseconds so repeated reads of an absent
+   * key do not each reach Postgres. Defaults to 0 (disabled). Keep it short
+   * (for example 250ms) to bound how long a concurrent write stays hidden; a
+   * set/delete notification clears the entry immediately.
+   */
+  negativeTtlMs?: number;
 }
 
 export interface PgKvCacheNotifyOptions {
@@ -86,6 +93,8 @@ export interface PgKvCacheStats {
   l1Hits: number;
   /** Monotonic L1 read misses (absent or expired) since the cache was created. */
   l1Misses: number;
+  /** Monotonic reads served from a cached L2 miss (negative cache). */
+  l1NegativeHits: number;
   /** True while L1 is bypassed because the invalidation listener is unhealthy. */
   l1Paused: boolean;
   /** Reads currently coalesced into an in-flight query. */
@@ -97,6 +106,7 @@ export interface PgKvCacheStats {
 interface L1Entry<T = unknown> {
   value: T;
   expiresAt: number | null;
+  negative?: boolean;
 }
 
 interface CacheRow {
@@ -199,6 +209,7 @@ export class PgKvCache {
   private readonly l1Enabled: boolean;
   private readonly l1Max: number;
   private readonly l1TtlMs: number;
+  private readonly l1NegativeTtlMs: number;
   private readonly notifyEnabled: boolean;
   private readonly serializer: PgKvSerializer;
   private readonly singleflight: boolean;
@@ -207,6 +218,7 @@ export class PgKvCache {
   private l1Generation = 0;
   private l1Hits = 0;
   private l1Misses = 0;
+  private l1NegativeHits = 0;
   private l1Paused = false;
   private coalescedReads = 0;
   private invalidationListener: PgListenerHandle | null = null;
@@ -223,6 +235,10 @@ export class PgKvCache {
     this.l1Enabled = options.l1 !== false;
     this.l1Max = options.l1 && options.l1.max !== undefined ? options.l1.max : DEFAULT_L1_MAX;
     this.l1TtlMs = options.l1 && options.l1.ttlMs !== undefined ? options.l1.ttlMs : DEFAULT_L1_TTL_MS;
+    this.l1NegativeTtlMs =
+      options.l1 && options.l1.negativeTtlMs !== undefined && options.l1.negativeTtlMs > 0
+        ? options.l1.negativeTtlMs
+        : 0;
 
     this.notifyEnabled = options.notify !== false && options.notify?.enabled !== false;
     this.notifyChannel = options.notify && options.notify.channel ? options.notify.channel : DEFAULT_NOTIFY_CHANNEL;
@@ -298,7 +314,8 @@ export class PgKvCache {
     );
     const row = rows[0];
     if (!row) {
-      this.deleteL1(key);
+      if (this.l1NegativeTtlMs > 0) this.setNegativeL1(key, l1Generation);
+      else this.deleteL1(key);
       return null;
     }
 
@@ -341,7 +358,9 @@ export class PgKvCache {
     }
 
     for (const key of missing) {
-      if (!result.has(key)) this.deleteL1(key);
+      if (result.has(key)) continue;
+      if (this.l1NegativeTtlMs > 0) this.setNegativeL1(key, l1Generation);
+      else this.deleteL1(key);
     }
 
     return result;
@@ -851,6 +870,7 @@ export class PgKvCache {
       l1Max: this.l1Max,
       l1Hits: this.l1Hits,
       l1Misses: this.l1Misses,
+      l1NegativeHits: this.l1NegativeHits,
       l1Paused: this.l1Paused,
       inflightReads: this.inflight.size,
       coalescedReads: this.coalescedReads
@@ -926,10 +946,23 @@ export class PgKvCache {
       this.l1Misses += 1;
       return { hit: false };
     }
-    this.l1Hits += 1;
+    if (entry.negative) {
+      this.l1NegativeHits += 1;
+    } else {
+      this.l1Hits += 1;
+    }
     this.l1.delete(key);
     this.l1.set(key, entry);
     return { hit: true, value: entry.value as T };
+  }
+
+  private setNegativeL1(key: string, generation = this.l1Generation): void {
+    if (!this.l1Enabled || this.l1Paused || this.l1Max <= 0 || this.l1NegativeTtlMs <= 0) return;
+    if (generation !== this.l1Generation) return;
+    const expiresAt = this.now() + this.l1NegativeTtlMs;
+    this.l1.delete(key);
+    this.l1.set(key, { value: null, expiresAt, negative: true });
+    this.enforceL1Max();
   }
 
   private setL1<T>(key: string, value: T, l2ExpiresAt: number | null, generation = this.l1Generation): void {
