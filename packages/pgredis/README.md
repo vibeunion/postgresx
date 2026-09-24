@@ -295,6 +295,10 @@ serializable transaction and therefore requires an adapter with `begin()`;
 the built-in Bun and Node adapters provide it. `getdel()` uses one atomic
 `DELETE ... RETURNING` statement.
 
+Concurrent reads of the same key are coalesced into a single Postgres
+round-trip by default. Disable it with `singleflight: false`; `stats()`
+reports `inflightReads` and the monotonic `coalescedReads` counter.
+
 ## Pub/Sub
 
 Publishing uses only the configured SQL adapter. Bun LISTEN/NOTIFY consumption
