@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.7.2...@postgresx/noredis-v0.8.0) (2026-09-24)
+
+
+### Features
+
+* **pgredis:** expose L1 hit and miss counters in PgKvCache.stats() ([#21](https://github.com/vibeunion/postgresx/issues/21)) ([d3e6ea8](https://github.com/vibeunion/postgresx/commit/d3e6ea86279c84a31e0f37bea225b6338a4ad6ac))
+
 ## [0.7.2](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.7.1...@postgresx/noredis-v0.7.2) (2026-09-04)
 
 
