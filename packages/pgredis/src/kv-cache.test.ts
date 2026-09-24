@@ -653,6 +653,53 @@ describe("PgKvCache", () => {
     listener.emit("close", { willReconnect: false });
     expect(cache.stats()).toMatchObject({ l1Size: 1, l1Paused: false });
   });
+
+  test("coalesces concurrent reads of the same key", async () => {
+    const sql = new DelayedReadSql();
+    const cache = new PgKvCache({ sql, namespace: "coalesce" });
+    await cache.set("token", { userId: 1 });
+    cache.invalidate("token");
+
+    const first = cache.get<{ userId: number }>("token");
+    const second = cache.get<{ userId: number }>("token");
+    const third = cache.get<{ userId: number }>("token");
+    await sql.readStarted;
+    expect(cache.stats()).toMatchObject({ inflightReads: 1, coalescedReads: 2 });
+    sql.releaseRead();
+
+    await expect(Promise.all([first, second, third])).resolves.toEqual([
+      { userId: 1 },
+      { userId: 1 },
+      { userId: 1 }
+    ]);
+    expect(sql.queries.filter((entry) => entry.query.includes("SELECT value"))).toHaveLength(1);
+    expect(cache.stats()).toMatchObject({ inflightReads: 0, coalescedReads: 2, l1Size: 1 });
+  });
+
+  test("does not coalesce reads of different keys", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "coalesce-keys" });
+    await cache.set("a", { v: 1 });
+    await cache.set("b", { v: 2 });
+    cache.invalidate("a");
+    cache.invalidate("b");
+
+    const [a, b] = await Promise.all([cache.get("a"), cache.get("b")]);
+    expect(a).toEqual({ v: 1 });
+    expect(b).toEqual({ v: 2 });
+    expect(cache.stats().coalescedReads).toBe(0);
+  });
+
+  test("issues one query per caller when singleflight is disabled", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "coalesce-off", singleflight: false });
+    await cache.set("token", { userId: 1 });
+    cache.invalidate("token");
+
+    await Promise.all([cache.get("token"), cache.get("token"), cache.get("token")]);
+    expect(sql.queries.filter((entry) => entry.query.includes("SELECT value"))).toHaveLength(3);
+    expect(cache.stats().coalescedReads).toBe(0);
+  });
 });
 
   test("NX: set only when key is missing", async () => {

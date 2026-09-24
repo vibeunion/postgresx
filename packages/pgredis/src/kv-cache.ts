@@ -41,6 +41,11 @@ export interface PgKvCacheOptions {
   instanceId?: string;
   now?: () => number;
   serializer?: PgKvSerializer;
+  /**
+   * Coalesce concurrent reads of the same key into a single Postgres query.
+   * Defaults to true; set to false to issue one query per caller.
+   */
+  singleflight?: boolean;
 }
 
 export interface PgKvSetOptions {
@@ -83,6 +88,10 @@ export interface PgKvCacheStats {
   l1Misses: number;
   /** True while L1 is bypassed because the invalidation listener is unhealthy. */
   l1Paused: boolean;
+  /** Reads currently coalesced into an in-flight query. */
+  inflightReads: number;
+  /** Monotonic count of reads that joined an in-flight query for the same key. */
+  coalescedReads: number;
 }
 
 interface L1Entry<T = unknown> {
@@ -192,11 +201,14 @@ export class PgKvCache {
   private readonly l1TtlMs: number;
   private readonly notifyEnabled: boolean;
   private readonly serializer: PgKvSerializer;
+  private readonly singleflight: boolean;
   private readonly l1 = new Map<string, L1Entry>();
+  private readonly inflight = new Map<string, Promise<unknown>>();
   private l1Generation = 0;
   private l1Hits = 0;
   private l1Misses = 0;
   private l1Paused = false;
+  private coalescedReads = 0;
   private invalidationListener: PgListenerHandle | null = null;
   private invalidationUnsubscribers: Array<() => void> = [];
 
@@ -218,6 +230,7 @@ export class PgKvCache {
       serialize: (value) => value,
       deserialize: (value) => value
     };
+    this.singleflight = options.singleflight !== false;
 
     const listenerFactory = this.resolveNotifyOptions(options.notify)?.listener;
     if (listenerFactory) {
@@ -254,6 +267,24 @@ export class PgKvCache {
   async get<T = unknown>(key: string): Promise<T | null> {
     const cached = this.getL1<T>(key);
     if (cached.hit) return cached.value;
+    return this.loadKey<T>(key);
+  }
+
+  private loadKey<T>(key: string): Promise<T | null> {
+    if (!this.singleflight) return this.readKey<T>(key);
+    const existing = this.inflight.get(key);
+    if (existing) {
+      this.coalescedReads += 1;
+      return existing as Promise<T | null>;
+    }
+    const pending = this.readKey<T>(key).finally(() => {
+      if (this.inflight.get(key) === pending) this.inflight.delete(key);
+    });
+    this.inflight.set(key, pending);
+    return pending;
+  }
+
+  private async readKey<T = unknown>(key: string): Promise<T | null> {
     const l1Generation = this.l1Generation;
 
     const rows = await this.sql.unsafe<CacheRow>(
@@ -820,7 +851,9 @@ export class PgKvCache {
       l1Max: this.l1Max,
       l1Hits: this.l1Hits,
       l1Misses: this.l1Misses,
-      l1Paused: this.l1Paused
+      l1Paused: this.l1Paused,
+      inflightReads: this.inflight.size,
+      coalescedReads: this.coalescedReads
     };
   }
 
