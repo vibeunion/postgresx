@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.8.0...@postgresx/noredis-v0.8.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **noredis:** pause L1 while the invalidation listener is unhealthy ([#23](https://github.com/vibeunion/postgresx/issues/23)) ([1a55a8c](https://github.com/vibeunion/postgresx/commit/1a55a8c5019055a9fd235b1c24b40fa9fc1cc95d))
+
 ## [0.8.0](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.7.2...@postgresx/noredis-v0.8.0) (2026-09-24)
 
 
