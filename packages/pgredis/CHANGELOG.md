@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.9.0...@postgresx/noredis-v0.10.0) (2026-09-24)
+
+
+### Features
+
+* **noredis:** add an optional negative cache for L2 misses ([#27](https://github.com/vibeunion/postgresx/issues/27)) ([dad8b1f](https://github.com/vibeunion/postgresx/commit/dad8b1f70fe0e46c059a1febe04ff44caee15fc0))
+
 ## [0.9.0](https://github.com/vibeunion/postgresx/compare/@postgresx/noredis-v0.8.1...@postgresx/noredis-v0.9.0) (2026-09-24)
 
 
