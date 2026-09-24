@@ -73,6 +73,10 @@ export interface PgKvCacheStats {
   tableName: string;
   l1Size: number;
   l1Max: number;
+  /** Monotonic L1 read hits since the cache was created. */
+  l1Hits: number;
+  /** Monotonic L1 read misses (absent or expired) since the cache was created. */
+  l1Misses: number;
 }
 
 interface L1Entry<T = unknown> {
@@ -184,6 +188,8 @@ export class PgKvCache {
   private readonly serializer: PgKvSerializer;
   private readonly l1 = new Map<string, L1Entry>();
   private l1Generation = 0;
+  private l1Hits = 0;
+  private l1Misses = 0;
   private invalidationListener: PgListenerHandle | null = null;
   private invalidationReconnectUnsubscribe: (() => void) | null = null;
 
@@ -771,7 +777,9 @@ export class PgKvCache {
       namespace: this.namespace,
       tableName: this.tableName,
       l1Size: this.l1.size,
-      l1Max: this.l1Max
+      l1Max: this.l1Max,
+      l1Hits: this.l1Hits,
+      l1Misses: this.l1Misses
     };
   }
 
@@ -835,11 +843,16 @@ export class PgKvCache {
   private getL1<T>(key: string): { hit: true; value: T | null } | { hit: false } {
     if (!this.l1Enabled) return { hit: false };
     const entry = this.l1.get(key);
-    if (!entry) return { hit: false };
-    if (entry.expiresAt !== null && entry.expiresAt <= this.now()) {
-      this.l1.delete(key);
+    if (!entry) {
+      this.l1Misses += 1;
       return { hit: false };
     }
+    if (entry.expiresAt !== null && entry.expiresAt <= this.now()) {
+      this.l1.delete(key);
+      this.l1Misses += 1;
+      return { hit: false };
+    }
+    this.l1Hits += 1;
     this.l1.delete(key);
     this.l1.set(key, entry);
     return { hit: true, value: entry.value as T };

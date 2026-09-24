@@ -527,6 +527,48 @@ describe("PgKvCache", () => {
     expect(cache.stats().l1Size).toBe(1);
   });
 
+  test("counts L1 read hits and misses", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "metrics" });
+
+    await cache.set("hot", { userId: 1 });
+    expect(cache.stats()).toMatchObject({ l1Hits: 0, l1Misses: 0 });
+
+    await cache.get("hot");
+    await cache.get("hot");
+    expect(cache.stats()).toMatchObject({ l1Hits: 2, l1Misses: 0 });
+
+    await cache.get("cold");
+    expect(cache.stats()).toMatchObject({ l1Hits: 2, l1Misses: 1 });
+
+    await cache.mget(["hot", "cold", "absent"]);
+    expect(cache.stats()).toMatchObject({ l1Hits: 3, l1Misses: 3 });
+  });
+
+  test("does not count reads while L1 is disabled", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({ sql, namespace: "metrics-off", l1: false });
+    await cache.get("anything");
+    expect(cache.stats()).toMatchObject({ l1Hits: 0, l1Misses: 0 });
+  });
+
+  test("counts an expired L1 entry as a miss", async () => {
+    const sql = new MockSql();
+    const cache = new PgKvCache({
+      sql,
+      namespace: "metrics-expiry",
+      l1: { ttlMs: 10 },
+      now: () => sql.now
+    });
+    await cache.set("token", { userId: 1 });
+    await cache.get("token");
+    expect(cache.stats()).toMatchObject({ l1Hits: 1, l1Misses: 0 });
+
+    sql.now += 20;
+    await cache.get("token");
+    expect(cache.stats()).toMatchObject({ l1Hits: 1, l1Misses: 1 });
+  });
+
   test("does not repopulate L1 from a read started before reconnect", async () => {
     const sql = new DelayedReadSql();
     const listener = new FakeListener();
