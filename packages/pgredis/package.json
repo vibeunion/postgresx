@@ -94,6 +94,6 @@
     "@types/pg": "^8.16.0",
     "@postgresx/bun-listen": "workspace:*",
     "tsup": "^8.5.0",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   }
 }
