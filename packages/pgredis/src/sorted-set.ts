@@ -213,6 +213,77 @@ export class PgSortedSet {
     return rows.length;
   }
 
+  /**
+   * ZREMRANGEBYSCORE: delete every member whose score falls in the inclusive
+   * [min, max] range. Returns the number of removed members.
+   */
+  async zremrangebyscore(
+    key: string,
+    min = Number.NEGATIVE_INFINITY,
+    max = Number.POSITIVE_INFINITY
+  ): Promise<number> {
+    const rows = await this.sql.unsafe<{ member: string }>(
+      `DELETE FROM ${this.quotedTableName}
+       WHERE namespace = $1 AND key = $2 AND score >= $3 AND score <= $4
+       RETURNING member`,
+      [this.namespace, key, min, max]
+    );
+    return rows.length;
+  }
+
+  /**
+   * ZREMRANGEBYRANK: delete every member whose rank falls in the inclusive
+   * [start, stop] range, negative offsets counting from the tail. Returns the
+   * number of removed members.
+   */
+  async zremrangebyrank(key: string, start = 0, stop = -1): Promise<number> {
+    const rows = await this.sql.unsafe<{ member: string }>(
+      `WITH ordered AS (
+         SELECT member,
+                (row_number() OVER (ORDER BY score ASC, member ASC) - 1)::bigint AS idx,
+                count(*) OVER () AS total
+         FROM ${this.quotedTableName}
+         WHERE namespace = $1 AND key = $2
+           AND (expires_at IS NULL OR expires_at > NOW())
+       ), bounds AS (
+         SELECT CASE WHEN $3::bigint < 0 THEN total + $3::bigint ELSE $3::bigint END AS range_from,
+                CASE WHEN $4::bigint < 0 THEN total + $4::bigint ELSE $4::bigint END AS range_to
+         FROM ordered
+         LIMIT 1
+       ), victims AS (
+         SELECT ordered.member
+         FROM ordered, bounds
+         WHERE ordered.idx >= GREATEST(bounds.range_from, 0)
+           AND ordered.idx <= bounds.range_to
+       )
+       DELETE FROM ${this.quotedTableName} target_row
+       USING victims
+       WHERE target_row.namespace = $1
+         AND target_row.key = $2
+         AND target_row.member = victims.member
+       RETURNING target_row.member`,
+      [this.namespace, key, Math.trunc(start), Math.trunc(stop)]
+    );
+    return rows.length;
+  }
+
+  /**
+   * ZMSCORE: the score of every requested member, in argument order, with null
+   * for the members that are absent or expired.
+   */
+  async zmscore(key: string, ...members: string[]): Promise<Array<number | null>> {
+    if (members.length === 0) return [];
+    const rows = await this.sql.unsafe<MemberRow>(
+      `SELECT member, score
+       FROM ${this.quotedTableName}
+       WHERE namespace = $1 AND key = $2 AND member = ANY($3::text[])
+         AND (expires_at IS NULL OR expires_at > NOW())`,
+      [this.namespace, key, members]
+    );
+    const scores = new Map(rows.map((row) => [row.member, Number(row.score)]));
+    return members.map((member) => scores.get(member) ?? null);
+  }
+
   async zpopmin(key: string, count = 1): Promise<PgSortedSetMember[]> {
     const rows = await this.sql.unsafe<MemberRow>(
       `WITH picked AS (
@@ -308,6 +379,11 @@ export class PgSortedSet {
 
   async zrevrange(key: string, start = 0, stop = -1, options: { withScores?: boolean } = {}): Promise<string[] | PgSortedSetMember[]> {
     return this.zrange(key, start, stop, { ...options, desc: true });
+  }
+
+  /** ZREVRANK: the rank counting from the highest score. */
+  async zrevrank(key: string, member: string): Promise<number | null> {
+    return this.zrank(key, member, { desc: true });
   }
 
   async zincrby(key: string, amount: number, member: string): Promise<number> {

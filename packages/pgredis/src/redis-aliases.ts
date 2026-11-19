@@ -96,6 +96,10 @@ export interface PgredisMigrationAliases {
   zrank(key: string, member: string): Promise<number | null>;
   zcount(key: string, min: number, max: number): Promise<number>;
   zrem(key: string, ...members: string[]): Promise<number>;
+  zremrangebyscore(key: string, min?: number, max?: number): Promise<number>;
+  zremrangebyrank(key: string, start?: number, stop?: number): Promise<number>;
+  zmscore(key: string, ...members: string[]): Promise<Array<number | null>>;
+  zrevrank(key: string, member: string): Promise<number | null>;
   zcard(key: string): Promise<number>;
   zincrby(key: string, amount: number, member: string): Promise<number>;
   zpopmin(key: string, count?: number): Promise<Array<{ member: string; score: number }>>;
@@ -341,6 +345,10 @@ export function createPgredisMigrationAliases(client: PgredisClient): PgredisMig
     zrank: (key, member) => client.sortedSet.zrank(key, member),
     zcount: (key, min, max) => client.sortedSet.zcount(key, min, max),
     zrem: (key, ...members) => client.sortedSet.zrem(key, ...members),
+    zremrangebyscore: (key, min, max) => client.sortedSet.zremrangebyscore(key, min, max),
+    zremrangebyrank: (key, start, stop) => client.sortedSet.zremrangebyrank(key, start, stop),
+    zmscore: (key, ...members) => client.sortedSet.zmscore(key, ...members),
+    zrevrank: (key, member) => client.sortedSet.zrevrank(key, member),
     zcard: (key) => client.sortedSet.zcard(key),
     zincrby: (key, amount, member) => client.sortedSet.zincrby(key, amount, member),
     zpopmin: (key, count) => client.sortedSet.zpopmin(key, count),
