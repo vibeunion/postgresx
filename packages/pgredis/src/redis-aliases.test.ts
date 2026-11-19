@@ -74,6 +74,10 @@ function createMockClient(): any {
     zrank: mockFn(async () => 0),
     zcount: mockFn(async () => 3),
     zrem: mockFn(async () => 1),
+    zremrangebyscore: mockFn(async () => 2),
+    zremrangebyrank: mockFn(async () => 3),
+    zmscore: mockFn(async (..._args: unknown[]) => [1, null]),
+    zrevrank: mockFn(async () => 4),
     zcard: mockFn(async () => 10),
     zincrby: mockFn(async () => 15),
     zpopmin: mockFn(async () => [{ member: "m1", score: 1 }]),
@@ -292,6 +296,14 @@ describe("PgredisMigrationAliases", () => {
   test("lrem throws UnsupportedCommandError", async () => {
     const { aliases } = makeAliases();
     await expect(aliases.lrem("l", 1, "val")).rejects.toThrow(UnsupportedCommandError);
+  });
+
+  test("zmscore/zrevrank/zremrangeby*", async () => {
+    const { aliases } = makeAliases();
+    expect(await aliases.zmscore("z", "a", "b")).toEqual([1, null]);
+    expect(await aliases.zrevrank("z", "a")).toBe(4);
+    expect(await aliases.zremrangebyscore("z", 0, 10)).toBe(2);
+    expect(await aliases.zremrangebyrank("z", 0, -1)).toBe(3);
   });
 
   // Set

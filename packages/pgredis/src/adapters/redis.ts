@@ -104,6 +104,10 @@ export interface RedisJsLikeAdapter {
   zRank(key: string, member: string): Promise<number | null>;
   zCount(key: string, min: number, max: number): Promise<number>;
   zRem(key: string, ...members: string[]): Promise<number>;
+  zRemRangeByScore(key: string, min: number | string, max: number | string): Promise<number>;
+  zRemRangeByRank(key: string, start: number, stop: number): Promise<number>;
+  zMScore(key: string, ...members: string[]): Promise<Array<number | null>>;
+  zRevRank(key: string, member: string): Promise<number | null>;
   zCard(key: string): Promise<number>;
   zIncrBy(key: string, amount: number, member: string): Promise<number>;
   zPopMin(key: string, count?: number): Promise<Array<{ member: string; score: number }>>;
@@ -230,6 +234,10 @@ export function createRedisJsAdapter(options: RedisJsAdapterOptions): RedisJsLik
     zRank: (key, member) => aliases.zrank(key, member),
     zCount: (key, min, max) => aliases.zcount(key, min, max),
     zRem: (key, ...members) => aliases.zrem(key, ...members),
+    zRemRangeByScore: (key, min, max) => aliases.zremrangebyscore(key, Number(min), Number(max)),
+    zRemRangeByRank: (key, start, stop) => aliases.zremrangebyrank(key, start, stop),
+    zMScore: (key, ...members) => aliases.zmscore(key, ...members),
+    zRevRank: (key, member) => aliases.zrevrank(key, member),
     zCard: (key) => aliases.zcard(key),
     zIncrBy: (key, amount, member) => aliases.zincrby(key, amount, member),
     zPopMin: (key, count) => aliases.zpopmin(key, count),

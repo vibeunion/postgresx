@@ -215,8 +215,12 @@ class SortedSetSql implements PgSqlLike {
       const member = String(params[2]);
       const score = this.scores.get(member);
       if (score === undefined) return [] as T[];
+      const desc = normalized.includes("CANDIDATE.SCORE > TARGET.SCORE");
       const rank = Array.from(this.scores.entries())
-        .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+        .sort((a, b) => {
+          const order = a[1] - b[1] || a[0].localeCompare(b[0]);
+          return desc ? -order : order;
+        })
         .findIndex(([item]) => item === member);
       return [{ count: rank }] as T[];
     }
@@ -233,6 +237,38 @@ class SortedSetSql implements PgSqlLike {
           return { member, score };
         });
       return rows as T[];
+    }
+    if (normalized.startsWith("DELETE FROM") && normalized.includes("SCORE >=")) {
+      const min = Number(params[2]);
+      const max = Number(params[3]);
+      const rows = Array.from(this.scores.entries())
+        .filter(([, score]) => score >= min && score <= max)
+        .map(([member, score]) => {
+          this.scores.delete(member);
+          return { member, score };
+        });
+      return rows as T[];
+    }
+    if (normalized.startsWith("WITH ORDERED") && normalized.includes("VICTIMS")) {
+      const total = this.scores.size;
+      let from = Number(params[2]);
+      let to = Number(params[3]);
+      if (from < 0) from = total + from;
+      if (to < 0) to = total + to;
+      const rows = Array.from(this.scores.entries())
+        .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+        .filter((_, index) => index >= Math.max(from, 0) && index <= to)
+        .map(([member, score]) => {
+          this.scores.delete(member);
+          return { member, score };
+        });
+      return rows as T[];
+    }
+    if (normalized.startsWith("SELECT MEMBER, SCORE")) {
+      const requested = params[2] as string[];
+      return requested
+        .filter((member) => this.scores.has(member))
+        .map((member) => ({ member, score: this.scores.get(member) as number })) as T[];
     }
     if (normalized.startsWith("DELETE FROM")) {
       const rows = Array.from(this.scores.entries())
@@ -372,6 +408,27 @@ describe("collection primitives", () => {
     await expect(sortedSet.zincrby("rank", 3, "a")).resolves.toBe(4);
     await expect(sortedSet.zpopmax("rank")).resolves.toEqual([{ member: "a", score: 4 }]);
     await expect(sortedSet.zpopmin("rank")).resolves.toEqual([{ member: "b", score: 2 }]);
+  });
+
+  test("sorted set supports mscore, revrank and range deletes", async () => {
+    const sortedSet = new PgSortedSet({ sql: new SortedSetSql() });
+
+    for (const [member, score] of [["a", 1], ["b", 2], ["c", 3], ["d", 4]] as const) {
+      await sortedSet.zadd("rank", score, member);
+    }
+
+    await expect(sortedSet.zmscore("rank", "c", "missing", "a")).resolves.toEqual([3, null, 1]);
+    await expect(sortedSet.zrevrank("rank", "a")).resolves.toBe(3);
+    await expect(sortedSet.zrevrank("rank", "missing")).resolves.toBeNull();
+
+    await expect(sortedSet.zremrangebyscore("rank", 2, 3)).resolves.toBe(2);
+    await expect(sortedSet.zrange("rank", 0, -1)).resolves.toEqual(["a", "d"]);
+
+    await expect(sortedSet.zremrangebyrank("rank", 0, 0)).resolves.toBe(1);
+    await expect(sortedSet.zrange("rank", 0, -1)).resolves.toEqual(["d"]);
+
+    await expect(sortedSet.zremrangebyrank("rank", 0, -1)).resolves.toBe(1);
+    await expect(sortedSet.zcard("rank")).resolves.toBe(0);
   });
 
   test("list supports push, range and pop", async () => {

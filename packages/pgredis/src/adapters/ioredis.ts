@@ -107,6 +107,10 @@ export interface IoredisLikeAdapter {
   zrank(key: string, member: string): Promise<number | null>;
   zcount(key: string, min: number, max: number): Promise<number>;
   zrem(key: string, ...members: string[]): Promise<number>;
+  zremrangebyscore(key: string, min: number | string, max: number | string): Promise<number>;
+  zremrangebyrank(key: string, start: number, stop: number): Promise<number>;
+  zmscore(key: string, ...members: string[]): Promise<Array<number | null>>;
+  zrevrank(key: string, member: string): Promise<number | null>;
   zcard(key: string): Promise<number>;
   zincrby(key: string, amount: number, member: string): Promise<number>;
   zpopmin(key: string, count?: number): Promise<Array<{ member: string; score: number }>>;
@@ -256,6 +260,10 @@ export function createIoredisAdapter(options: IoredisAdapterOptions): IoredisLik
     zrank: (key, member) => aliases.zrank(key, member),
     zcount: (key, min, max) => aliases.zcount(key, min, max),
     zrem: (key, ...members) => aliases.zrem(key, ...members),
+    zremrangebyscore: (key, min, max) => aliases.zremrangebyscore(key, Number(min), Number(max)),
+    zremrangebyrank: (key, start, stop) => aliases.zremrangebyrank(key, start, stop),
+    zmscore: (key, ...members) => aliases.zmscore(key, ...members),
+    zrevrank: (key, member) => aliases.zrevrank(key, member),
     zcard: (key) => aliases.zcard(key),
     zincrby: (key, amount, member) => aliases.zincrby(key, amount, member),
     zpopmin: (key, count) => aliases.zpopmin(key, count),

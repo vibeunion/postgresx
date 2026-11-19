@@ -129,6 +129,12 @@ describe("PostgreSQL integration", () => {
       await expect(client.sortedSet.zadd("scores", 10, "u1")).resolves.toBe(true);
       await expect(client.sortedSet.zadd("scores", 20, "u2")).resolves.toBe(true);
       await expect(client.sortedSet.zrange("scores", 0, -1)).resolves.toEqual(["u1", "u2"]);
+      await expect(client.sortedSet.zmscore("scores", "u2", "missing", "u1")).resolves.toEqual([20, null, 10]);
+      await expect(client.sortedSet.zrevrank("scores", "u1")).resolves.toBe(1);
+      await expect(client.redis.zremrangebyscore("scores", 20, 20)).resolves.toBe(1);
+      await expect(client.sortedSet.zrange("scores", 0, -1)).resolves.toEqual(["u1"]);
+      await expect(client.redis.zremrangebyrank("scores", 0, -1)).resolves.toBe(1);
+      await expect(client.sortedSet.zcard("scores")).resolves.toBe(0);
 
       await expect(client.rateLimit?.hit("user:1")).resolves.toMatchObject({ allowed: true, remaining: 1 });
       await expect(client.rateLimit?.hit("user:1")).resolves.toMatchObject({ allowed: true, remaining: 0 });
