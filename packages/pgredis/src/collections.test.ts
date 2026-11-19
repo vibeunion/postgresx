@@ -256,11 +256,19 @@ class ListSql implements PgSqlLike {
     const normalized = query.replace(/\s+/g, " ").trim().toUpperCase();
     if (normalized.startsWith("CREATE")) return [] as T[];
     if (normalized.startsWith("INSERT INTO")) {
-      for (let index = 2; index < params.length; index += 4) {
+      // rows are (namespace, key, value) groups followed by the clock anchor
+      const total = Math.floor((params.length - 1) / 3);
+      const now = Number(params[params.length - 1]);
+      const left = normalized.includes("LEAST(");
+      const positions = this.rows.map((row) => row.position);
+      const anchor = left
+        ? Math.min(...(positions.length === 0 ? [now] : positions.map((p) => p - 1)), now)
+        : Math.max(...(positions.length === 0 ? [now] : positions.map((p) => p + 1)), now);
+      for (let index = 0; index < total; index++) {
         this.rows.push({
           id: ++this.id,
-          position: Number(params[index]),
-          value: JSON.parse(String(params[index + 1]))
+          position: left ? anchor - (total - 1 - index) : anchor + index,
+          value: JSON.parse(String(params[index * 3 + 2]))
         });
       }
       return [] as T[];

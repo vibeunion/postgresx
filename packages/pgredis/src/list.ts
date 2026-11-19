@@ -161,16 +161,26 @@ export class PgList {
 
   private async push<T>(key: string, values: T[], side: "left" | "right"): Promise<number> {
     if (values.length === 0) return this.llen(key);
-    const base = this.now();
+    // Positions must stay ordered, so anchor the batch past the edge of the
+    // list instead of at the clock: two pushes in the same millisecond used to
+    // collide and fall back to id order, which put the newer batch first. The
+    // subquery sees the pre-statement snapshot, so every row of this batch
+    // shares one anchor.
+    const nowParam = `$${values.length * 3 + 1}`;
+    const anchor = side === "left"
+      ? `(SELECT LEAST(COALESCE(MIN(position) - 1, ${nowParam}::double precision), ${nowParam}::double precision) FROM ${this.quotedTableName} WHERE namespace = $1 AND key = $2)`
+      : `(SELECT GREATEST(COALESCE(MAX(position) + 1, ${nowParam}::double precision), ${nowParam}::double precision) FROM ${this.quotedTableName} WHERE namespace = $1 AND key = $2)`;
     const params: unknown[] = [];
     const groups = values.map((value, index) => {
+      // LPUSH puts the last argument at the head, RPUSH the first at the tail.
       const position = side === "left"
-        ? -(base + values.length - index)
-        : base + index;
-      const paramIndex = index * 4;
-      params.push(this.namespace, key, position, jsonValue(value));
-      return `($${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}::jsonb, (SELECT MAX(expires_at) FROM ${this.quotedTableName} WHERE namespace = $${paramIndex + 1} AND key = $${paramIndex + 2}), NOW())`;
+        ? `${anchor} - ${values.length - 1 - index}`
+        : `${anchor} + ${index}`;
+      const paramIndex = index * 3;
+      params.push(this.namespace, key, jsonValue(value));
+      return `($${paramIndex + 1}, $${paramIndex + 2}, ${position}, $${paramIndex + 3}::jsonb, (SELECT MAX(expires_at) FROM ${this.quotedTableName} WHERE namespace = $${paramIndex + 1} AND key = $${paramIndex + 2}), NOW())`;
     }).join(", ");
+    params.push(this.now());
 
     await this.sql.unsafe(
       `INSERT INTO ${this.quotedTableName} (namespace, key, position, value, expires_at, created_at)
@@ -179,7 +189,6 @@ export class PgList {
     );
     return this.llen(key);
   }
-
   private async pop<T>(key: string, count: number, direction: "ASC" | "DESC"): Promise<T[]> {
     const limit = Math.max(1, Math.floor(count));
     const rows = await this.sql.unsafe<ListRow>(
