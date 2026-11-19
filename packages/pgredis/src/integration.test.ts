@@ -123,6 +123,25 @@ describe("PostgreSQL integration", () => {
       await expect(client.list.lrange<string>("events", 0, -1)).resolves.toEqual(["z", "a", "b"]);
       await expect(client.list.rpop<string>("events")).resolves.toEqual(["b"]);
 
+      // Rows pushed in the same millisecond must keep insertion order instead
+      // of falling back to the id tie-break of a colliding position.
+      await client.list.rpush("events", "c", "d");
+      await client.list.rpush("events", "e", "f");
+      await expect(client.list.lrange<string>("events", 0, -1)).resolves.toEqual(["z", "a", "c", "d", "e", "f"]);
+
+      // LINDEX / LSET / LTRIM / LREM follow the Redis index rules.
+      await expect(client.list.lindex<string>("events", -1)).resolves.toBe("f");
+      await expect(client.list.lindex<string>("events", 99)).resolves.toBeNull();
+      await expect(client.list.lset("events", 0, "Z")).resolves.toBe(true);
+      await expect(client.list.lset("events", 99, "nope")).resolves.toBe(false);
+      await expect(client.redis.ltrim("events", 0, -2)).resolves.toBe("OK");
+      await expect(client.list.lrange<string>("events", 0, -1)).resolves.toEqual(["Z", "a", "c", "d", "e"]);
+      await expect(client.list.lrem("events", 0, "e")).resolves.toBe(1);
+      await expect(client.list.lrange<string>("events", 0, -1)).resolves.toEqual(["Z", "a", "c", "d"]);
+      await expect(client.redis.lindex("events", 0)).resolves.toBe("Z");
+      await expect(client.redis.lset("events", 1, "A")).resolves.toBe("OK");
+      await expect(client.list.lrange<string>("events", 0, -1)).resolves.toEqual(["Z", "A", "c", "d"]);
+
       await expect(client.set.sadd("roles", "admin", "editor")).resolves.toBe(2);
       await expect(client.set.sinter("roles", "missing")).resolves.toEqual([]);
 

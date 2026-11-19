@@ -124,18 +124,138 @@ export class PgList {
   }
 
   async lrange<T = unknown>(key: string, start = 0, stop = -1): Promise<T[]> {
-    const limit = stop < 0 ? null : Math.max(0, stop - start + 1);
-    const rows = await this.sql.unsafe<ListRow>(
-      `SELECT value
-       FROM ${this.quotedTableName}
-       WHERE namespace = $1 AND key = $2
-         AND (expires_at IS NULL OR expires_at > NOW())
-       ORDER BY position ASC, id ASC
-       OFFSET $3
-       LIMIT COALESCE($4::bigint, 9223372036854775807)`,
-      [this.namespace, key, Math.max(0, start), limit]
+    const rows = await this.selectSlice<T>(key, start, stop);
+    return rows.map((row) => row.value);
+  }
+
+  /**
+   * LINDEX: the element at a zero-based index, negative counting from the
+   * tail. Returns null when the index is out of range.
+   */
+  async lindex<T = unknown>(key: string, index = 0): Promise<T | null> {
+    const rows = await this.selectSlice<T>(key, index, index);
+    return rows.length === 0 ? null : rows[0]!.value;
+  }
+
+  /**
+   * LSET: overwrite the element at a zero-based index, negative counting from
+   * the tail. Returns false when the index is out of range, which is the error
+   * Redis reports for the same input.
+   */
+  async lset<T = unknown>(key: string, index: number, value: T): Promise<boolean> {
+    const rows = await this.sql.unsafe<{ id: string }>(
+      `WITH ordered AS (
+         SELECT id,
+                (row_number() OVER (ORDER BY position ASC, id ASC) - 1)::bigint AS idx,
+                count(*) OVER () AS total
+         FROM ${this.quotedTableName}
+         WHERE namespace = $1 AND key = $2
+           AND (expires_at IS NULL OR expires_at > NOW())
+       ), target AS (
+         SELECT id
+         FROM ordered
+         WHERE ordered.idx = CASE WHEN $3::bigint < 0 THEN ordered.total + $3::bigint ELSE $3::bigint END
+       )
+       UPDATE ${this.quotedTableName} target_row
+       SET value = $4::jsonb
+       FROM target
+       WHERE target_row.id = target.id
+       RETURNING target_row.id`,
+      [this.namespace, key, Math.trunc(index), jsonValue(value)]
     );
-    return rows.map((row) => parseValue<T>(row.value));
+    return rows.length > 0;
+  }
+
+  /**
+   * LTRIM: keep the inclusive [start, stop] range, negative counting from the
+   * tail, and delete everything outside it. Returns the number of removed
+   * elements. Redis itself answers OK.
+   */
+  async ltrim(key: string, start = 0, stop = -1): Promise<number> {
+    const rows = await this.sql.unsafe<{ id: string }>(
+      `WITH ordered AS (
+         SELECT id,
+                (row_number() OVER (ORDER BY position ASC, id ASC) - 1)::bigint AS idx,
+                count(*) OVER () AS total
+         FROM ${this.quotedTableName}
+         WHERE namespace = $1 AND key = $2
+           AND (expires_at IS NULL OR expires_at > NOW())
+       ), bounds AS (
+         SELECT CASE WHEN $3::bigint < 0 THEN total + $3::bigint ELSE $3::bigint END AS keep_from,
+                CASE WHEN $4::bigint < 0 THEN total + $4::bigint ELSE $4::bigint END AS keep_to
+         FROM ordered
+         LIMIT 1
+       ), discarded AS (
+         SELECT ordered.id
+         FROM ordered, bounds
+         WHERE ordered.idx < bounds.keep_from OR ordered.idx > bounds.keep_to
+       )
+       DELETE FROM ${this.quotedTableName} target_row
+       USING discarded
+       WHERE target_row.id = discarded.id
+       RETURNING target_row.id`,
+      [this.namespace, key, Math.trunc(start), Math.trunc(stop)]
+    );
+    return rows.length;
+  }
+
+  /**
+   * LREM: remove occurrences of value. count > 0 removes from the head, count
+   * < 0 from the tail, count = 0 removes every occurrence. Returns the number
+   * of removed elements.
+   */
+  async lrem(key: string, count = 0, value: unknown): Promise<number> {
+    const order = count < 0 ? "DESC" : "ASC";
+    const limit = count === 0 ? null : Math.abs(Math.trunc(count));
+    const rows = await this.sql.unsafe<{ id: string }>(
+      `WITH matched AS (
+         SELECT id
+         FROM ${this.quotedTableName}
+         WHERE namespace = $1 AND key = $2
+           AND (expires_at IS NULL OR expires_at > NOW())
+           AND value = $3::jsonb
+         ORDER BY position ${order}, id ${order}
+         LIMIT COALESCE($4::bigint, 9223372036854775807)
+       )
+       DELETE FROM ${this.quotedTableName} target_row
+       USING matched
+       WHERE target_row.id = matched.id
+       RETURNING target_row.id`,
+      [this.namespace, key, jsonValue(value), limit]
+    );
+    return rows.length;
+  }
+
+  // selectSlice resolves Redis-style inclusive indices over the live rows.
+  // Both ends accept negative offsets counting from the tail, which the former
+  // OFFSET/LIMIT form could not express: lrange(key, 0, -2) returned everything.
+  private async selectSlice<T = unknown>(
+    key: string,
+    start: number,
+    stop: number
+  ): Promise<Array<{ idx: number; value: T }>> {
+    const rows = await this.sql.unsafe<ListRow & { idx: number | string }>(
+      `WITH ordered AS (
+         SELECT value,
+                (row_number() OVER (ORDER BY position ASC, id ASC) - 1)::bigint AS idx,
+                count(*) OVER () AS total
+         FROM ${this.quotedTableName}
+         WHERE namespace = $1 AND key = $2
+           AND (expires_at IS NULL OR expires_at > NOW())
+       ), bounds AS (
+         SELECT CASE WHEN $3::bigint < 0 THEN total + $3::bigint ELSE $3::bigint END AS slice_from,
+                CASE WHEN $4::bigint < 0 THEN total + $4::bigint ELSE $4::bigint END AS slice_to
+         FROM ordered
+         LIMIT 1
+       )
+       SELECT ordered.idx, ordered.value
+       FROM ordered, bounds
+       WHERE ordered.idx >= GREATEST(bounds.slice_from, 0)
+         AND ordered.idx <= bounds.slice_to
+       ORDER BY ordered.idx ASC`,
+      [this.namespace, key, Math.trunc(start), Math.trunc(stop)]
+    );
+    return rows.map((row) => ({ idx: Number(row.idx), value: parseValue<T>(row.value) }));
   }
 
   async llen(key: string): Promise<number> {
@@ -189,6 +309,7 @@ export class PgList {
     );
     return this.llen(key);
   }
+
   private async pop<T>(key: string, count: number, direction: "ASC" | "DESC"): Promise<T[]> {
     const limit = Math.max(1, Math.floor(count));
     const rows = await this.sql.unsafe<ListRow>(

@@ -72,6 +72,9 @@ export interface PgredisMigrationAliases {
   llen(key: string): Promise<number>;
   lrange<T = unknown>(key: string, start?: number, stop?: number): Promise<T[]>;
   lrem(key: string, count: number, value: unknown): Promise<number>;
+  ltrim(key: string, start?: number, stop?: number): Promise<"OK">;
+  lindex<T = unknown>(key: string, index: number): Promise<T | null>;
+  lset<T = unknown>(key: string, index: number, value: T): Promise<"OK">;
 
   // Set
   sadd(key: string, ...members: string[]): Promise<number>;
@@ -294,8 +297,18 @@ export function createPgredisMigrationAliases(client: PgredisClient): PgredisMig
     },
     llen: (key) => client.list.llen(key),
     lrange: (key, start, stop) => client.list.lrange(key, start, stop),
-    async lrem() {
-      throw new UnsupportedCommandError("lrem");
+    async lrem(key, count, value) {
+      return client.list.lrem(key, count, value);
+    },
+    async ltrim(key, start = 0, stop = -1) {
+      await client.list.ltrim(key, start, stop);
+      return "OK" as const;
+    },
+    lindex: (key, index) => client.list.lindex(key, index),
+    async lset<T = unknown>(key: string, index: number, value: T) {
+      const replaced = await client.list.lset(key, index, value);
+      if (!replaced) throw new Error("lset: index out of range");
+      return "OK" as const;
     },
 
     // Set
