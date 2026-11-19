@@ -90,6 +90,10 @@ function createMockClient(): any {
     brpop: mockFn(async () => ({ key: "mylist", value: "val" })),
     llen: mockFn(async () => 5),
     lrange: mockFn(async () => ["a", "b"]),
+    lrem: mockFn(async () => 2),
+    ltrim: mockFn(async () => 1),
+    lindex: mockFn(async () => "val"),
+    lset: mockFn(async () => true),
   };
 
   const pubsub = {
@@ -289,9 +293,19 @@ describe("PgredisMigrationAliases", () => {
     expect(await aliases.lrange("l", 0, -1)).toEqual(["a", "b"]);
   });
 
-  test("lrem throws UnsupportedCommandError", async () => {
+  test("lrem/ltrim/lindex/lset", async () => {
     const { aliases } = makeAliases();
-    await expect(aliases.lrem("l", 1, "val")).rejects.toThrow(UnsupportedCommandError);
+    expect(await aliases.lrem("l", 1, "val")).toBe(2);
+    expect(await aliases.ltrim("l", 0, -1)).toBe("OK");
+    expect(await aliases.lindex<string>("l", 0)).toBe("val");
+    expect(await aliases.lset("l", 0, "next")).toBe("OK");
+  });
+
+  test("lset rejects an out-of-range index", async () => {
+    const mock = createMockClient();
+    mock.list.lset = mockFn(async () => false);
+    const aliases = createPgredisMigrationAliases(asPgredisClient(mock));
+    await expect(aliases.lset("l", 99, "next")).rejects.toThrow("index out of range");
   });
 
   // Set

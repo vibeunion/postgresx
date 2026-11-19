@@ -83,6 +83,9 @@ export interface IoredisLikeAdapter {
   llen(key: string): Promise<number>;
   lrange(key: string, start?: number, stop?: number): Promise<string[]>;
   lrem(key: string, count: number, value: string): Promise<number>;
+  ltrim(key: string, start?: number, stop?: number): Promise<"OK">;
+  lindex(key: string, index: number): Promise<string | null>;
+  lset(key: string, index: number, value: string): Promise<"OK">;
 
   // Set
   sadd(key: string, ...members: string[]): Promise<number>;
@@ -225,6 +228,9 @@ export function createIoredisAdapter(options: IoredisAdapterOptions): IoredisLik
     llen: (key) => aliases.llen(key),
     lrange: (key, start, stop) => aliases.lrange<string>(key, start, stop).then(strArr),
     lrem: (key, count, value) => aliases.lrem(key, count, value),
+    ltrim: (key, start, stop) => aliases.ltrim(key, start, stop),
+    lindex: (key, index) => aliases.lindex<string>(key, index).then(str),
+    lset: (key, index, value) => aliases.lset(key, index, value),
 
     // Set
     sadd: (key, ...members) => aliases.sadd(key, ...members),

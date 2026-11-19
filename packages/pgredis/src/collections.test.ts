@@ -256,11 +256,19 @@ class ListSql implements PgSqlLike {
     const normalized = query.replace(/\s+/g, " ").trim().toUpperCase();
     if (normalized.startsWith("CREATE")) return [] as T[];
     if (normalized.startsWith("INSERT INTO")) {
-      for (let index = 2; index < params.length; index += 4) {
+      // rows are (namespace, key, value) groups followed by the clock anchor
+      const total = Math.floor((params.length - 1) / 3);
+      const now = Number(params[params.length - 1]);
+      const left = normalized.includes("LEAST(");
+      const positions = this.rows.map((row) => row.position);
+      const anchor = left
+        ? Math.min(...(positions.length === 0 ? [now] : positions.map((p) => p - 1)), now)
+        : Math.max(...(positions.length === 0 ? [now] : positions.map((p) => p + 1)), now);
+      for (let index = 0; index < total; index++) {
         this.rows.push({
           id: ++this.id,
-          position: Number(params[index]),
-          value: JSON.parse(String(params[index + 1]))
+          position: left ? anchor - (total - 1 - index) : anchor + index,
+          value: JSON.parse(String(params[index * 3 + 2]))
         });
       }
       return [] as T[];
@@ -268,8 +276,38 @@ class ListSql implements PgSqlLike {
     if (normalized.startsWith("SELECT COUNT")) {
       return [{ count: this.rows.length }] as T[];
     }
-    if (normalized.startsWith("SELECT VALUE")) {
-      return this.sorted("ASC").map((row) => ({ value: row.value })) as T[];
+    // selectSlice: $3 = start, $4 = stop. Redis-style inclusive indices,
+    // negative offsets count from the tail.
+    if (normalized.startsWith("WITH ORDERED") && normalized.includes("SELECT ORDERED.IDX")) {
+      const { lo, hi } = this.sliceBounds([params[2], params[3]]);
+      const ordered = this.sorted("ASC");
+      return ordered
+        .slice(lo, Math.max(lo, hi + 1))
+        .map((row, offset) => ({ idx: lo + offset, value: row.value })) as T[];
+    }
+    if (normalized.startsWith("WITH ORDERED") && normalized.includes("DISCARDED")) {
+      const { lo, hi } = this.sliceBounds([params[2], params[3]]);
+      const kept = this.sorted("ASC").slice(lo, Math.max(lo, hi + 1));
+      const removed = this.rows.filter((row) => !kept.includes(row));
+      this.rows.splice(0, this.rows.length, ...kept);
+      return removed.map((row) => ({ id: row.id })) as T[];
+    }
+    if (normalized.startsWith("WITH ORDERED") && normalized.includes("UPDATE")) {
+      const { lo, hi } = this.sliceBounds([params[2]]);
+      const target = lo <= hi ? this.sorted("ASC")[lo] : undefined;
+      if (!target) return [] as T[];
+      target.value = JSON.parse(String(params[3]));
+      return [{ id: target.id }] as T[];
+    }
+    if (normalized.startsWith("WITH MATCHED")) {
+      const wanted = JSON.parse(String(params[2]));
+      const fromTail = normalized.includes("POSITION DESC");
+      const limit = params[3] === null ? Number.POSITIVE_INFINITY : Number(params[3]);
+      const candidates = this.sorted(fromTail ? "DESC" : "ASC")
+        .filter((row) => JSON.stringify(row.value) === JSON.stringify(wanted))
+        .slice(0, limit);
+      this.rows.splice(0, this.rows.length, ...this.rows.filter((row) => !candidates.includes(row)));
+      return candidates.map((row) => ({ id: row.id })) as T[];
     }
     if (normalized.startsWith("WITH PICKED")) {
       const direction = normalized.includes("POSITION DESC") ? "DESC" : "ASC";
@@ -285,6 +323,16 @@ class ListSql implements PgSqlLike {
       return deleted.map((row) => ({ id: row.id })) as T[];
     }
     throw new Error(`Unhandled SQL: ${query}`);
+  }
+
+  private sliceBounds(params: readonly unknown[]): { lo: number; hi: number } {
+    const total = this.rows.length;
+    const start = Number(params[0] ?? 0);
+    const stop = Number(params[1] ?? -1);
+    return {
+      lo: start < 0 ? total + start : start,
+      hi: stop < 0 ? total + stop : stop
+    };
   }
 
   private sorted(direction: "ASC" | "DESC") {
@@ -383,5 +431,40 @@ describe("collection primitives", () => {
     await expect(list.lpop("jobs")).resolves.toEqual(["head"]);
     await expect(list.rpop("jobs")).resolves.toEqual(["b"]);
     await expect(list.llen("jobs")).resolves.toBe(1);
+  });
+
+  test("list supports index, set, trim and remove", async () => {
+    const list = new PgList({ sql: new ListSql(), now: () => 1000 });
+
+    await list.rpush("jobs", "a", "b", "a", "c", "a");
+    await expect(list.lindex("jobs", 1)).resolves.toBe("b");
+    await expect(list.lindex("jobs", -1)).resolves.toBe("a");
+    await expect(list.lindex("jobs", 99)).resolves.toBeNull();
+
+    await expect(list.lset("jobs", 1, "B")).resolves.toBe(true);
+    await expect(list.lset("jobs", 99, "nope")).resolves.toBe(false);
+    await expect(list.lrange("jobs", 0, -1)).resolves.toEqual(["a", "B", "a", "c", "a"]);
+
+    // count > 0: from the head, count < 0: from the tail, 0: everywhere.
+    await expect(list.lrem("jobs", 1, "a")).resolves.toBe(1);
+    await expect(list.lrange("jobs", 0, -1)).resolves.toEqual(["B", "a", "c", "a"]);
+    await expect(list.lrem("jobs", -1, "a")).resolves.toBe(1);
+    await expect(list.lrange("jobs", 0, -1)).resolves.toEqual(["B", "a", "c"]);
+    await expect(list.lrem("jobs", 0, "a")).resolves.toBe(1);
+    await expect(list.lrange("jobs", 0, -1)).resolves.toEqual(["B", "c"]);
+
+    await list.rpush("jobs", "d", "e");
+    await expect(list.ltrim("jobs", 1, -2)).resolves.toBe(2);
+    await expect(list.lrange("jobs", 0, -1)).resolves.toEqual(["c", "d"]);
+  });
+
+  test("list range honours negative stop offsets", async () => {
+    const list = new PgList({ sql: new ListSql(), now: () => 1000 });
+
+    await list.rpush("jobs", "a", "b", "c", "d");
+    await expect(list.lrange("jobs", 0, -2)).resolves.toEqual(["a", "b", "c"]);
+    await expect(list.lrange("jobs", -2, -1)).resolves.toEqual(["c", "d"]);
+    await expect(list.lrange("jobs", 1, 2)).resolves.toEqual(["b", "c"]);
+    await expect(list.lrange("jobs", 5, 9)).resolves.toEqual([]);
   });
 });

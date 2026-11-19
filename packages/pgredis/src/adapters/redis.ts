@@ -80,6 +80,9 @@ export interface RedisJsLikeAdapter {
   lLen(key: string): Promise<number>;
   lRange(key: string, start?: number, stop?: number): Promise<string[]>;
   lRem(key: string, count: number, value: string): Promise<number>;
+  lTrim(key: string, start?: number, stop?: number): Promise<"OK">;
+  lIndex(key: string, index: number): Promise<string | null>;
+  lSet(key: string, index: number, value: string): Promise<"OK">;
 
   // Set
   sAdd(key: string, ...members: string[]): Promise<number>;
@@ -206,6 +209,9 @@ export function createRedisJsAdapter(options: RedisJsAdapterOptions): RedisJsLik
     lLen: (key) => aliases.llen(key),
     lRange: (key, start, stop) => aliases.lrange<string>(key, start, stop).then(strArr),
     lRem: (key, count, value) => aliases.lrem(key, count, value),
+    lTrim: (key, start, stop) => aliases.ltrim(key, start, stop),
+    lIndex: (key, index) => aliases.lindex<string>(key, index).then(str),
+    lSet: (key, index, value) => aliases.lset(key, index, value),
 
     // Set
     sAdd: (key, ...members) => aliases.sadd(key, ...members),
